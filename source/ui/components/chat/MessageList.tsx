@@ -60,6 +60,8 @@ export interface Message {
 		isComplete?: boolean;
 	};
 	subAgentInternal?: boolean; // Mark internal sub-agent messages to filter from API requests
+	subAgentProgress?: boolean; // Mark sub-agent heartbeat/progress UI message
+	subAgentBody?: boolean; // Mark sub-agent streaming/final body message
 	subAgentUsage?: {
 		inputTokens: number;
 		outputTokens: number;

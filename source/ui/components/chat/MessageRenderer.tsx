@@ -256,9 +256,14 @@ export default function MessageRenderer({
 											const hasToolStatus = message.messageStatus !== undefined;
 											const isSubAgentInternal =
 												message.subAgentInternal === true;
+											const isSubAgentBody =
+												message.subAgentBody === true;
+											const shouldRenderAsInternal =
+												hasToolStatus ||
+												(isSubAgentInternal && !isSubAgentBody);
 
 											if (
-												(hasToolStatus || isSubAgentInternal) &&
+												shouldRenderAsInternal &&
 												(message.role === 'assistant' ||
 													message.role === 'subagent')
 											) {
@@ -267,10 +272,48 @@ export default function MessageRenderer({
 												const lines = content.split('\n');
 												const titleLine = lines[0] || '';
 												const treeLines = lines.slice(1);
+												const hasTitleLine =
+													titleLine.trim().length > 0;
 
 												// Calculate context usage bar for sub-agent messages
 												const ctxUsage = message.subAgentContextUsage;
 												const showCtxBar = ctxUsage && ctxUsage.percentage > 0;
+												const renderCtxBar = () => {
+													const pct = ctxUsage!.percentage;
+													const barWidth = 10;
+													const filled = Math.round((pct / 100) * barWidth);
+													const empty = barWidth - filled;
+													const bar =
+														'\u2588'.repeat(filled) +
+														'\u2591'.repeat(empty);
+													const barColor =
+														pct >= 80
+															? 'red'
+															: pct >= 65
+															? 'yellow'
+															: pct >= 50
+															? 'cyan'
+															: 'gray';
+													return (
+														<Text color={barColor} dimColor>
+															{'└─ Context: '}
+															{pct}
+															{'% '}
+															{bar}
+														</Text>
+													);
+												};
+
+												if (!hasTitleLine) {
+													return (
+														<>
+															<Text color={toolStatusColor}>
+																{removeAnsiCodes(content)}
+															</Text>
+															{showCtxBar && renderCtxBar()}
+														</>
+													);
+												}
 
 												return (
 													<>
@@ -284,20 +327,7 @@ export default function MessageRenderer({
 																	.join('\n')}
 															</Text>
 														)}
-														{showCtxBar && (() => {
-															const pct = ctxUsage.percentage;
-															const barWidth = 10;
-															const filled = Math.round((pct / 100) * barWidth);
-															const empty = barWidth - filled;
-															const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(empty);
-															const barColor =
-																pct >= 80 ? 'red' : pct >= 65 ? 'yellow' : pct >= 50 ? 'cyan' : 'gray';
-															return (
-																<Text color={barColor} dimColor>
-																	{'└─ Context: '}{pct}{'% '}{bar}
-																</Text>
-															);
-														})()}
+														{showCtxBar && renderCtxBar()}
 													</>
 												);
 											}

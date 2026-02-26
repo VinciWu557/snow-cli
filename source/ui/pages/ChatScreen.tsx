@@ -1212,6 +1212,12 @@ export default function ChatScreen({
 				streamTokenCount={streamingState.streamTokenCount}
 				elapsedSeconds={streamingState.elapsedSeconds}
 				currentModel={streamingState.currentModel}
+				currentPhase={streamingState.currentPhase}
+				stallLevel={streamingState.stallLevel}
+				stallReason={streamingState.stallReason}
+				lastProgressAt={streamingState.lastProgressAt}
+				lastSubAgentEventType={streamingState.lastSubAgentEventType}
+				lastSubAgentName={streamingState.lastSubAgentName}
 			/>
 
 			<Box paddingX={1} width={terminalWidth}>

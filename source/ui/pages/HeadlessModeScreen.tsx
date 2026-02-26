@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useRef} from 'react';
 import {useStdout} from 'ink';
 import ansiEscapes from 'ansi-escapes';
 import {highlight} from 'cli-highlight';
@@ -24,6 +24,25 @@ type Props = {
 	sessionId?: string;
 	onComplete: () => void;
 };
+
+function getHeadlessPhaseText(
+	phase: 'thinking' | 'reasoning' | 'tooling' | 'waiting_retry' | 'finalizing',
+): string {
+	if (phase === 'reasoning') return 'Deep thinking...';
+	if (phase === 'tooling') return 'Executing tools...';
+	if (phase === 'waiting_retry') return 'Waiting for retry...';
+	if (phase === 'finalizing') return 'Finalizing...';
+	return 'Thinking...';
+}
+
+function getStallReasonText(
+	reason: 'no_token_no_event' | 'no_token' | 'no_event' | null,
+): string {
+	if (reason === 'no_token_no_event') return 'no tokens or sub-agent events';
+	if (reason === 'no_token') return 'no tokens';
+	if (reason === 'no_event') return 'no sub-agent events';
+	return 'no recent progress';
+}
 
 // Console-based markdown renderer functions
 function renderConsoleMarkdown(content: string): string {
@@ -255,6 +274,27 @@ function renderInlineFormatting(text: string): string {
 	return text;
 }
 
+function extractThinkingTextFromApiMessage(msg: any): string | undefined {
+	if (msg.thinking?.thinking) {
+		return cleanThinkingInHeadless(msg.thinking.thinking);
+	}
+	if (msg.reasoning?.summary && Array.isArray(msg.reasoning.summary)) {
+		const summaryText = msg.reasoning.summary
+			.map((item: any) => item?.text)
+			.filter(Boolean)
+			.join('\n');
+		return summaryText ? cleanThinkingInHeadless(summaryText) : undefined;
+	}
+	if (msg.reasoning_content && typeof msg.reasoning_content === 'string') {
+		return cleanThinkingInHeadless(msg.reasoning_content);
+	}
+	return undefined;
+}
+
+function cleanThinkingInHeadless(content: string): string {
+	return content.replace(/\s*<\/?think(?:ing)?>\s*/gi, '').trim();
+}
+
 // Get theme colors
 const getTheme = () => {
 	const currentTheme = getCurrentTheme();
@@ -356,9 +396,11 @@ export default function HeadlessModeScreen({
 	const [isComplete, setIsComplete] = useState(false);
 	const [lastDisplayedIndex, setLastDisplayedIndex] = useState(-1);
 	const [isWaitingForInput, setIsWaitingForInput] = useState(false);
+	const [lastDiagnosticAt, setLastDiagnosticAt] = useState(0);
 	const {stdout} = useStdout();
 	const workingDirectory = process.cwd();
 	const {t} = useI18n();
+	const lastStatusSnapshotRef = useRef<string>('');
 
 	// Use custom hooks
 	const streamingState = useStreamingState();
@@ -390,9 +432,20 @@ export default function HeadlessModeScreen({
 					console.log(`\n\x1b[96m❆ ${lastMessage.content}\x1b[0m`);
 				}
 				setLastDisplayedIndex(currentIndex);
-			} else if (lastMessage.content && !lastMessage.streaming) {
-				// Final response with markdown rendering and better formatting
-				console.log(renderConsoleMarkdown(lastMessage.content));
+			} else if (
+				(lastMessage.content || lastMessage.thinking) &&
+				!lastMessage.streaming
+			) {
+				// Final response with markdown rendering and better formatting.
+				// Render thinking when text content is empty so users can still see model progress output.
+				if (lastMessage.thinking) {
+					console.log('\n\x1b[90m┌─ Thinking\x1b[0m');
+					console.log(`\x1b[90m│  ${cleanThinkingInHeadless(lastMessage.thinking)}\x1b[0m`);
+					console.log('\x1b[90m└─ End Thinking\x1b[0m');
+				}
+				if (lastMessage.content) {
+					console.log(renderConsoleMarkdown(lastMessage.content));
+				}
 
 				// Show tool results if available with better styling
 				if (
@@ -463,25 +516,123 @@ export default function HeadlessModeScreen({
 					);
 				}
 			} else {
-				// Show normal thinking status with colors
-				const thinkingText = streamingState.isReasoning
+				// Show normal streaming status with phase and stall transparency
+				const phaseText = streamingState.isReasoning
 					? 'Deep thinking...'
-					: streamingState.streamTokenCount > 0
-					? 'Writing...'
-					: 'Thinking...';
+					: getHeadlessPhaseText(streamingState.currentPhase);
+				const stalledForSeconds = streamingState.lastProgressAt
+					? Math.max(
+							0,
+							Math.floor((Date.now() - streamingState.lastProgressAt) / 1000),
+					  )
+					: 0;
+				const subAgentText = streamingState.lastSubAgentName
+					? ` · \x1b[35m⚇ ${streamingState.lastSubAgentName}${
+							streamingState.lastSubAgentEventType
+								? `:${streamingState.lastSubAgentEventType}`
+								: ''
+					  }\x1b[37m`
+					: '';
+				const stallText =
+					streamingState.stallLevel === 'none'
+						? ''
+						: streamingState.stallLevel === 'critical'
+						? ` · \x1b[31m⚠ stalled? ${stalledForSeconds}s (${getStallReasonText(
+								streamingState.stallReason,
+						  )})\x1b[37m`
+						: ` · \x1b[33m⚠ slow ${stalledForSeconds}s (${getStallReasonText(
+								streamingState.stallReason,
+						  )})\x1b[37m`;
+				const actionText =
+					streamingState.stallLevel === 'critical'
+						? ' · \x1b[90mEsc:interrupt D:diagnose\x1b[37m'
+						: '';
+				const statusLine = `\r\x1b[96m❆\x1b[90m ${phaseText} \x1b[33m${streamingState.elapsedSeconds}s\x1b[37m · \x1b[32m↓ ${streamingState.streamTokenCount} tokens\x1b[0m${subAgentText}${stallText}${actionText}`;
+				if (statusLine !== lastStatusSnapshotRef.current) {
+					lastStatusSnapshotRef.current = statusLine;
+				}
 				process.stdout.write(
-					`\r\x1b[96m❆\x1b[90m ${thinkingText} \x1b[33m${streamingState.elapsedSeconds}s\x1b[37m · \x1b[32m↓ ${streamingState.streamTokenCount} tokens\x1b[0m`,
+					lastStatusSnapshotRef.current,
 				);
 			}
 		}
 	}, [
+		streamingState.currentPhase,
 		streamingState.isStreaming,
 		streamingState.isReasoning,
 		streamingState.elapsedSeconds,
 		streamingState.streamTokenCount,
 		streamingState.retryStatus,
+		streamingState.lastProgressAt,
+		streamingState.lastSubAgentEventType,
+		streamingState.lastSubAgentName,
+		streamingState.stallLevel,
+		streamingState.stallReason,
 		isWaitingForInput,
 		t,
+	]);
+
+	useEffect(() => {
+		if (!streamingState.isStreaming || isWaitingForInput) return;
+
+		const onData = (data: Buffer) => {
+			const str = data.toString();
+			if (str === '\x1b') {
+				if (!streamingState.abortController?.signal.aborted) {
+					process.stdout.write('\r\x1b[K');
+					console.log('\x1b[33m⚠ Interrupt requested (Esc)\x1b[0m');
+					streamingState.setIsStopping(true);
+					streamingState.abortController?.abort();
+				}
+				return;
+			}
+
+			if (
+				(str === 'd' || str === 'D') &&
+				Date.now() - lastDiagnosticAt >= 400
+			) {
+				setLastDiagnosticAt(Date.now());
+				const stalledForSeconds = streamingState.lastProgressAt
+					? Math.max(
+							0,
+							Math.floor((Date.now() - streamingState.lastProgressAt) / 1000),
+					  )
+					: 0;
+				process.stdout.write('\r\x1b[K');
+				console.log(
+					`\x1b[90m[诊断] phase=${streamingState.currentPhase} stall=${streamingState.stallLevel} reason=${getStallReasonText(
+						streamingState.stallReason,
+					)} idle=${stalledForSeconds}s tokens=${streamingState.streamTokenCount} lastSubAgent=${
+						streamingState.lastSubAgentName || 'n/a'
+					} lastEvent=${streamingState.lastSubAgentEventType || 'n/a'}\x1b[0m`,
+				);
+			}
+		};
+
+		if (process.stdin.isTTY && process.stdin.setRawMode) {
+			process.stdin.setRawMode(true);
+		}
+		process.stdin.on('data', onData);
+
+		return () => {
+			process.stdin.off('data', onData);
+			if (process.stdin.isTTY && process.stdin.setRawMode && !isWaitingForInput) {
+				process.stdin.setRawMode(false);
+			}
+		};
+	}, [
+		streamingState.isStreaming,
+		streamingState.abortController,
+		streamingState.setIsStopping,
+		streamingState.currentPhase,
+		streamingState.stallLevel,
+		streamingState.stallReason,
+		streamingState.streamTokenCount,
+		streamingState.lastProgressAt,
+		streamingState.lastSubAgentEventType,
+		streamingState.lastSubAgentName,
+		lastDiagnosticAt,
+		isWaitingForInput,
 	]);
 	const processMessage = async () => {
 		try {
@@ -499,6 +650,7 @@ export default function HeadlessModeScreen({
 							({
 								role: msg.role,
 								content: msg.content,
+								thinking: extractThinkingTextFromApiMessage(msg),
 								toolCall: msg.tool_calls
 									? {
 											name: msg.tool_calls[0]?.function.name || '',
@@ -648,6 +800,8 @@ export default function HeadlessModeScreen({
 				setIsStreaming: streamingState.setIsStreaming,
 				setIsReasoning: streamingState.setIsReasoning,
 				setRetryStatus: streamingState.setRetryStatus,
+				setCurrentPhase: streamingState.setCurrentPhase,
+				markSubAgentProgress: streamingState.markSubAgentProgress,
 			});
 		} catch (error) {
 			console.error(

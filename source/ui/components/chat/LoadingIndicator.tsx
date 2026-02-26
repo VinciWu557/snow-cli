@@ -48,6 +48,17 @@ type LoadingIndicatorProps = {
 	streamTokenCount: number;
 	elapsedSeconds: number;
 	currentModel?: string | null;
+	currentPhase:
+		| 'thinking'
+		| 'reasoning'
+		| 'tooling'
+		| 'waiting_retry'
+		| 'finalizing';
+	stallLevel: 'none' | 'warning' | 'critical';
+	stallReason: 'no_token_no_event' | 'no_token' | 'no_event' | null;
+	lastProgressAt: number | null;
+	lastSubAgentEventType: string | null;
+	lastSubAgentName: string | null;
 };
 
 export default function LoadingIndicator({
@@ -65,9 +76,43 @@ export default function LoadingIndicator({
 	streamTokenCount,
 	elapsedSeconds,
 	currentModel,
+	currentPhase,
+	stallLevel,
+	stallReason,
+	lastProgressAt,
+	lastSubAgentEventType,
+	lastSubAgentName,
 }: LoadingIndicatorProps) {
 	const {theme} = useTheme();
 	const {t} = useI18n();
+
+	const getPhaseText = (): string => {
+		if (currentPhase === 'reasoning' || isReasoning) {
+			return t.chatScreen.statusDeepThinking;
+		}
+		if (currentPhase === 'tooling') {
+			return 'Executing tools...';
+		}
+		if (currentPhase === 'waiting_retry') {
+			return 'Waiting for retry...';
+		}
+		if (currentPhase === 'finalizing') {
+			return t.chatScreen.statusWriting;
+		}
+		return t.chatScreen.statusThinking;
+	};
+
+	const getStallReasonText = (): string => {
+		if (stallReason === 'no_token') return 'no new tokens';
+		if (stallReason === 'no_event') return 'no new sub-agent events';
+		if (stallReason === 'no_token_no_event')
+			return 'no new tokens or sub-agent events';
+		return 'no recent progress';
+	};
+
+	const stalledForSeconds = lastProgressAt
+		? Math.max(0, Math.floor((Date.now() - lastProgressAt) / 1000))
+		: 0;
 
 	// 不显示加载指示器的条件
 	if (
@@ -123,34 +168,48 @@ export default function LoadingIndicator({
 						) : codebaseSearchStatus?.isSearching ? (
 							<CodebaseSearchStatus status={codebaseSearchStatus} />
 						) : (
-							<Text color={theme.colors.menuSecondary} dimColor bold>
-								<ShimmerText
-									text={
-										isReasoning
-											? t.chatScreen.statusDeepThinking
-											: streamTokenCount > 0
-											? t.chatScreen.statusWriting
-											: t.chatScreen.statusThinking
-									}
-								/>
-								(
-								{currentModel && (
-									<>
-										{currentModel}
-										{' · '}
-									</>
-								)}
-								{formatElapsedTime(elapsedSeconds)}
-								{' · '}
-								<Text color="cyan">
-									↓{' '}
-									{streamTokenCount >= 1000
-										? `${(streamTokenCount / 1000).toFixed(1)}k`
-										: streamTokenCount}{' '}
-									tokens
+							<Box flexDirection="column">
+								<Text color={theme.colors.menuSecondary} dimColor bold>
+									<ShimmerText text={getPhaseText()} />
+									(
+									{currentModel && (
+										<>
+											{currentModel}
+											{' · '}
+										</>
+									)}
+									{formatElapsedTime(elapsedSeconds)}
+									{' · '}
+									<Text color="cyan">
+										↓{' '}
+										{streamTokenCount >= 1000
+											? `${(streamTokenCount / 1000).toFixed(1)}k`
+											: streamTokenCount}{' '}
+										tokens
+									</Text>
+									{lastSubAgentName && (
+										<>
+											{' · '}
+											<Text color="magenta">
+												{subAgentLabel(lastSubAgentName, lastSubAgentEventType)}
+											</Text>
+										</>
+									)}
+									)
 								</Text>
-								)
-							</Text>
+								{stallLevel !== 'none' && (
+									<Text
+										color={stallLevel === 'critical' ? 'red' : 'yellow'}
+										dimColor={stallLevel !== 'critical'}
+									>
+										{stallLevel === 'critical'
+											? 'Potentially stalled'
+											: 'Slow progress'}{' '}
+										· {getStallReasonText()} · {stalledForSeconds}s ·
+										Press Esc to interrupt
+									</Text>
+								)}
+							</Box>
 						)}
 					</>
 				) : (
@@ -161,4 +220,9 @@ export default function LoadingIndicator({
 			</Box>
 		</Box>
 	);
+}
+
+function subAgentLabel(agentName: string, eventType: string | null): string {
+	if (!eventType) return `sub-agent: ${agentName}`;
+	return `sub-agent: ${agentName} (${eventType})`;
 }

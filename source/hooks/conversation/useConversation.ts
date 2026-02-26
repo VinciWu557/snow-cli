@@ -104,6 +104,12 @@ export type ConversationHandlerOptions = {
 	>; // Clear snapshot counts after compression
 	getCurrentContextPercentage?: () => number; // Get current context percentage from ChatInput
 	setCurrentModel?: React.Dispatch<React.SetStateAction<string | null>>; // Set current model name for display
+	setCurrentPhase?: React.Dispatch<
+		React.SetStateAction<
+			'thinking' | 'reasoning' | 'tooling' | 'waiting_retry' | 'finalizing'
+		>
+	>;
+	markSubAgentProgress?: (eventType: string, agentName?: string) => void;
 };
 
 /**
@@ -130,6 +136,8 @@ export async function handleConversationWithTools(
 		setContextUsage,
 		setIsReasoning,
 		setRetryStatus,
+		setCurrentPhase,
+		markSubAgentProgress,
 	} = options;
 
 	// Create a wrapper function for adding single tool to always-approved list
@@ -254,6 +262,7 @@ export async function handleConversationWithTools(
 				freeEncoder();
 				break;
 			}
+			setCurrentPhase?.('thinking');
 
 			let streamedContent = '';
 			let receivedToolCalls: ToolCall[] | undefined;
@@ -293,6 +302,7 @@ export async function handleConversationWithTools(
 						errorMessage: error.message,
 					});
 				}
+				setCurrentPhase?.('waiting_retry');
 			};
 
 			const streamGenerator =
@@ -367,11 +377,13 @@ export async function handleConversationWithTools(
 					setTimeout(() => {
 						setRetryStatus(null);
 					}, 500);
+					setCurrentPhase?.('thinking');
 				}
 
 				if (chunk.type === 'reasoning_started') {
 					// Reasoning started (Responses API only) - set reasoning state
 					setIsReasoning?.(true);
+					setCurrentPhase?.('reasoning');
 				} else if (chunk.type === 'reasoning_delta' && chunk.delta) {
 					// Handle reasoning delta from Gemini thinking
 					// When reasoning_delta is received, set reasoning state if not already set
@@ -379,6 +391,7 @@ export async function handleConversationWithTools(
 						setIsReasoning?.(true);
 						hasStartedReasoning = true;
 					}
+					setCurrentPhase?.('reasoning');
 					// Note: reasoning content is NOT sent back to AI, only counted for display
 					reasoningAccumulator += chunk.delta;
 					// Incremental token counting with throttling - only encode the new delta
@@ -398,6 +411,7 @@ export async function handleConversationWithTools(
 					// Accumulate content and update token count
 					// When content starts, reasoning is done
 					setIsReasoning?.(false);
+					setCurrentPhase?.('finalizing');
 					streamedContent += chunk.content;
 					// Incremental token counting with throttling - only encode the new delta
 					try {
@@ -416,6 +430,7 @@ export async function handleConversationWithTools(
 					// Accumulate tool call deltas and update token count in real-time
 					// When tool calls start, reasoning is done (OpenAI generally doesn't output text content during tool calls)
 					setIsReasoning?.(false);
+					setCurrentPhase?.('tooling');
 					toolCallAccumulator += chunk.delta;
 					// Incremental token counting with throttling - only encode the new delta
 					try {
@@ -432,6 +447,7 @@ export async function handleConversationWithTools(
 					}
 				} else if (chunk.type === 'tool_calls' && chunk.tool_calls) {
 					receivedToolCalls = chunk.tool_calls;
+					setCurrentPhase?.('tooling');
 				} else if (chunk.type === 'reasoning_data' && chunk.reasoning) {
 					// Capture reasoning data from Responses API
 					receivedReasoning = chunk.reasoning;
@@ -498,6 +514,7 @@ export async function handleConversationWithTools(
 			// but the assistant message with tool_calls MUST be persisted for conversation continuity
 			const shouldProcessToolCalls =
 				receivedToolCalls && receivedToolCalls.length > 0;
+			setCurrentPhase?.(shouldProcessToolCalls ? 'tooling' : 'finalizing');
 
 			// If there are tool calls, we need to handle them specially
 			if (shouldProcessToolCalls) {
@@ -683,12 +700,44 @@ export async function handleConversationWithTools(
 				}
 
 				// Execute approved tools with sub-agent message callback and terminal output callback
-				// Track sub-agent content for token counting and throttle UI updates
-				let subAgentContentAccumulator = '';
-				let subAgentContentBuffer = '';
-				let subAgentTokenCount = 0;
-				let lastSubAgentFlushTime = 0;
-				const SUB_AGENT_FLUSH_INTERVAL = 100;
+				// Track sub-agent content per agent for token counting and throttled UI updates
+				const SUB_AGENT_FLUSH_INTERVAL = 240;
+				const SUB_AGENT_MIN_FLUSH_CHARS = 24;
+				type SubAgentStreamState = {
+					contentAccumulator: string;
+					contentBuffer: string;
+					tokenCount: number;
+					lastFlushTime: number;
+				};
+				const subAgentStreamStateById = new Map<string, SubAgentStreamState>();
+				const getSubAgentStreamState = (
+					agentId: string,
+				): SubAgentStreamState => {
+					let state = subAgentStreamStateById.get(agentId);
+					if (!state) {
+						state = {
+							contentAccumulator: '',
+							contentBuffer: '',
+							tokenCount: 0,
+							lastFlushTime: 0,
+						};
+						subAgentStreamStateById.set(agentId, state);
+					}
+					return state;
+				};
+				const resetSubAgentStreamState = (agentId: string): void => {
+					subAgentStreamStateById.delete(agentId);
+				};
+				const isSemanticBoundary = (text: string): boolean => {
+					if (!text) return false;
+					if (/\s$/.test(text)) return true;
+					const trimmed = text.trimEnd();
+					if (!trimmed) return false;
+					if (/[。！？!?；;：:，,、)\]}>"'`]+$/.test(trimmed)) return true;
+					// Flush at closed code fences to avoid splitting markdown blocks.
+					if (/\n```[\w-]*\s*$/.test(trimmed)) return true;
+					return false;
+				};
 				// Track latest context usage per sub-agent (keyed by agentId).
 				// This persists across setMessages calls so newly created tool_calls messages
 				// can inherit the latest context usage from the same agent.
@@ -699,6 +748,10 @@ export async function handleConversationWithTools(
 					setStreamTokenCount,
 
 					async subAgentMessage => {
+						markSubAgentProgress?.(
+							subAgentMessage.message.type,
+							subAgentMessage.agentName,
+						);
 						// Handle sub-agent messages - display and save to session
 						setMessages(prev => {
 							// Handle sub-agent context usage update
@@ -863,12 +916,68 @@ export async function handleConversationWithTools(
 								return [...prev, uiMsg];
 							}
 
+							// Handle sub-agent heartbeat progress message (UI only).
+							// Keep this path isolated from normal content accumulation.
+							if (subAgentMessage.message.type === 'progress') {
+								const progressContent =
+									subAgentMessage.message.content ||
+									`[进度] 正在执行，已耗时 ${subAgentMessage.message.elapsedSeconds || 0}s...`;
+
+								let progressIndex = -1;
+								for (let i = prev.length - 1; i >= 0; i--) {
+									const m = prev[i];
+									if (
+										m &&
+										m.role === 'subagent' &&
+										m.subAgent?.agentId === subAgentMessage.agentId &&
+										m.subAgentProgress === true &&
+										!m.subAgent?.isComplete
+									) {
+										progressIndex = i;
+										break;
+									}
+								}
+
+								if (progressIndex !== -1) {
+									const updated = [...prev];
+									const existing = updated[progressIndex];
+									if (existing && existing.subAgent) {
+										updated[progressIndex] = {
+											...existing,
+											content: progressContent,
+											streaming: true,
+											subAgent: {
+												...existing.subAgent,
+												isComplete: false,
+											},
+										};
+									}
+									return updated;
+								}
+
+								return [
+									...prev,
+									{
+										role: 'subagent' as const,
+										content: progressContent,
+										streaming: true,
+										subAgent: {
+											agentId: subAgentMessage.agentId,
+											agentName: subAgentMessage.agentName,
+											isComplete: false,
+										},
+										subAgentInternal: true,
+										subAgentProgress: true,
+									},
+								];
+							}
+
 							// Handle tool calls from sub-agent
 							if (subAgentMessage.message.type === 'tool_calls') {
 								const toolCalls = subAgentMessage.message.tool_calls;
 								if (toolCalls && toolCalls.length > 0) {
 									// Filter out internal agent collaboration tools — they are
-								// handled internally and displayed via dedicated events.
+									// handled internally and displayed via dedicated events.
 									const internalAgentTools = new Set([
 										'send_message_to_agent',
 										'query_agents_status',
@@ -1187,55 +1296,113 @@ export async function handleConversationWithTools(
 									return updated;
 								}
 
-								return prev;
-							}
+							return prev;
+						}
 
-							// Check if we already have a message for this agent
-							const existingIndex = prev.findIndex(
-								m =>
+							// Find the most recent streaming body message for this agent.
+							let existingIndex = -1;
+							for (let i = prev.length - 1; i >= 0; i--) {
+								const m = prev[i];
+								if (
+									m &&
 									m.role === 'subagent' &&
 									m.subAgent?.agentId === subAgentMessage.agentId &&
 									!m.subAgent?.isComplete &&
 									m.streaming === true &&
-									!m.pendingToolIds, // Don't match pending tool messages
-							);
+									m.subAgentBody === true &&
+									!m.toolCall &&
+									!m.toolResult &&
+									!m.pendingToolIds &&
+									!m.subAgentProgress
+								) {
+									existingIndex = i;
+									break;
+								}
+							}
 
 							// Extract content from the sub-agent message
 							let contentToApply = '';
+							const streamState = getSubAgentStreamState(
+								subAgentMessage.agentId,
+							);
 							if (subAgentMessage.message.type === 'content') {
 								const incomingContent = subAgentMessage.message.content;
-								subAgentContentAccumulator += incomingContent;
-								subAgentContentBuffer += incomingContent;
+								streamState.contentAccumulator += incomingContent;
+								streamState.contentBuffer += incomingContent;
 								try {
 									const deltaTokens = encoder.encode(incomingContent);
-									subAgentTokenCount += deltaTokens.length;
+									streamState.tokenCount += deltaTokens.length;
 								} catch (e) {
 									// Ignore encoding errors and continue streaming updates
 								}
 								const now = Date.now();
-								if (now - lastSubAgentFlushTime >= SUB_AGENT_FLUSH_INTERVAL) {
-									setStreamTokenCount(subAgentTokenCount);
-									lastSubAgentFlushTime = now;
-									contentToApply = subAgentContentBuffer;
-									subAgentContentBuffer = '';
+								if (
+									now - streamState.lastFlushTime >= SUB_AGENT_FLUSH_INTERVAL &&
+									streamState.contentBuffer.length >=
+										SUB_AGENT_MIN_FLUSH_CHARS &&
+									isSemanticBoundary(streamState.contentBuffer)
+								) {
+									setStreamTokenCount(streamState.tokenCount);
+									streamState.lastFlushTime = now;
+									contentToApply = streamState.contentBuffer;
+									streamState.contentBuffer = '';
 								} else {
 									return prev;
 								}
 							} else if (subAgentMessage.message.type === 'done') {
-								contentToApply = subAgentContentBuffer;
-								subAgentContentAccumulator = '';
-								subAgentContentBuffer = '';
-								subAgentTokenCount = 0;
-								lastSubAgentFlushTime = 0;
+								contentToApply = streamState.contentBuffer;
+								streamState.contentAccumulator = '';
+								streamState.contentBuffer = '';
+								streamState.tokenCount = 0;
+								streamState.lastFlushTime = 0;
 								setStreamTokenCount(0);
-								if (existingIndex !== -1) {
-									const updated = [...prev];
-									const existing = updated[existingIndex];
+								resetSubAgentStreamState(subAgentMessage.agentId);
+
+								const hasProgressMessage = prev.some(
+									m =>
+										m.role === 'subagent' &&
+										m.subAgent?.agentId === subAgentMessage.agentId &&
+										m.subAgentProgress === true,
+								);
+								const baseMessages = hasProgressMessage
+									? prev.filter(
+											m =>
+												!(
+													m.role === 'subagent' &&
+													m.subAgent?.agentId === subAgentMessage.agentId &&
+													m.subAgentProgress === true
+												),
+									  )
+									: prev;
+
+								let existingDoneIndex = -1;
+								for (let i = baseMessages.length - 1; i >= 0; i--) {
+									const m = baseMessages[i];
+									if (
+										m &&
+										m.role === 'subagent' &&
+										m.subAgent?.agentId === subAgentMessage.agentId &&
+										!m.subAgent?.isComplete &&
+										m.streaming === true &&
+										m.subAgentBody === true &&
+										!m.toolCall &&
+										!m.toolResult &&
+										!m.pendingToolIds &&
+										!m.subAgentProgress
+									) {
+										existingDoneIndex = i;
+										break;
+									}
+								}
+								if (existingDoneIndex !== -1) {
+									const updated = [...baseMessages];
+									const existing = updated[existingDoneIndex];
 									if (existing && existing.subAgent) {
-										updated[existingIndex] = {
+										updated[existingDoneIndex] = {
 											...existing,
 											content: (existing.content || '') + contentToApply,
 											streaming: false,
+											subAgentBody: true,
 											subAgent: {
 												...existing.subAgent,
 												isComplete: true,
@@ -1244,8 +1411,24 @@ export async function handleConversationWithTools(
 									}
 									return updated;
 								}
-								// Keep original behavior: do not create a new final sub-agent reply on done.
-								return prev;
+								if (contentToApply) {
+									return [
+										...baseMessages,
+										{
+											role: 'subagent' as const,
+											content: contentToApply,
+											streaming: false,
+											subAgent: {
+												agentId: subAgentMessage.agentId,
+												agentName: subAgentMessage.agentName,
+												isComplete: true,
+											},
+											subAgentInternal: true,
+											subAgentBody: true,
+										},
+									];
+								}
+								return hasProgressMessage ? baseMessages : prev;
 							}
 
 							if (existingIndex !== -1 && contentToApply) {
@@ -1257,13 +1440,26 @@ export async function handleConversationWithTools(
 										...existing,
 										content: (existing.content || '') + contentToApply,
 										streaming: true,
+										subAgentBody: true,
 									};
 								}
 								return updated;
 							} else if (contentToApply) {
-								// Do not create text-only sub-agent message from content chunks.
-								// Sub-agent UI messages are created by tool_calls/tool_result flows only.
-								return prev;
+								return [
+									...prev,
+									{
+										role: 'subagent' as const,
+										content: contentToApply,
+										streaming: true,
+											subAgent: {
+												agentId: subAgentMessage.agentId,
+												agentName: subAgentMessage.agentName,
+												isComplete: false,
+											},
+											subAgentInternal: true,
+											subAgentBody: true,
+										},
+									];
 							}
 
 							return prev;
@@ -1452,8 +1648,8 @@ export async function handleConversationWithTools(
 					}
 				}
 
-				// Remove only streaming sub-agent content messages (not tool-related messages)
-				// Keep sub-agent tool call and tool result messages for display
+				// Remove only non-internal sub-agent content messages.
+				// Keep internal tool/progress/system sub-agent messages for display.
 				setMessages(prev =>
 					prev.filter(
 						m =>
@@ -1810,18 +2006,20 @@ export async function handleConversationWithTools(
 			}
 
 			// No tool calls - conversation is complete
-			// Display text content if any
-			if (streamedContent.trim()) {
+			const thinkingContent = extractThinkingContent(
+				receivedThinking,
+				receivedReasoning,
+				receivedReasoningContent,
+			);
+
+			// Display assistant content if there's text or thinking
+			if (streamedContent.trim() || thinkingContent) {
 				finalAssistantMessage = {
 					role: 'assistant',
 					content: streamedContent.trim(),
 					streaming: false,
 					discontinued: controller.signal.aborted,
-					thinking: extractThinkingContent(
-						receivedThinking,
-						receivedReasoning,
-						receivedReasoningContent,
-					),
+					thinking: thinkingContent,
 				};
 				setMessages(prev => [...prev, finalAssistantMessage!]);
 

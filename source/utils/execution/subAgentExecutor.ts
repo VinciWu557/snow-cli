@@ -1404,8 +1404,29 @@ You have access to these collaboration tools:
 						encrypted_content?: string;
 				  }
 				| undefined; // Responses API reasoning data
+			const startTime = Date.now();
+			let lastHeartbeatAt = startTime;
+			const HEARTBEAT_INTERVAL_MS = 8000;
 
 			for await (const event of stream) {
+				if (onMessage) {
+					const now = Date.now();
+					if (now - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
+						const elapsedSeconds = Math.floor((now - startTime) / 1000);
+						onMessage({
+							type: 'sub_agent_message',
+							agentId: agent.id,
+							agentName: agent.name,
+							message: {
+								type: 'progress',
+								elapsedSeconds,
+								content: `[进度] 正在执行，已耗时 ${elapsedSeconds}s...`,
+							},
+						});
+						lastHeartbeatAt = now;
+					}
+				}
+
 				// Forward message to UI (but don't save to main conversation)
 				if (onMessage) {
 					onMessage({
