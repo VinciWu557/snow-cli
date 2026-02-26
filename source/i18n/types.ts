@@ -707,6 +707,18 @@ export type TranslationKeys = {
 		statusThinking: string;
 		statusDeepThinking: string;
 		statusWriting: string;
+		statusExecutingTools: string;
+		statusWaitingRetry: string;
+		statusFinalizing: string;
+		statusPotentiallyStalled: string;
+		statusSlowProgress: string;
+		statusNoNewTokens: string;
+		statusNoNewSubAgentEvents: string;
+		statusNoNewTokensOrEvents: string;
+		statusNoRecentProgress: string;
+		statusPressEscToInterrupt: string;
+		statusSubAgentLabel: string;
+		statusSubAgentLabelWithEvent: string;
 		statusStreaming: string;
 		statusWorking: string;
 		statusIndexing: string;

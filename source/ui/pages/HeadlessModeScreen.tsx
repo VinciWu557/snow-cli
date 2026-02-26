@@ -27,21 +27,34 @@ type Props = {
 
 function getHeadlessPhaseText(
 	phase: 'thinking' | 'reasoning' | 'tooling' | 'waiting_retry' | 'finalizing',
+	chatScreen: {
+		statusThinking: string;
+		statusDeepThinking: string;
+		statusExecutingTools: string;
+		statusWaitingRetry: string;
+		statusFinalizing: string;
+	},
 ): string {
-	if (phase === 'reasoning') return 'Deep thinking...';
-	if (phase === 'tooling') return 'Executing tools...';
-	if (phase === 'waiting_retry') return 'Waiting for retry...';
-	if (phase === 'finalizing') return 'Finalizing...';
-	return 'Thinking...';
+	if (phase === 'reasoning') return chatScreen.statusDeepThinking;
+	if (phase === 'tooling') return chatScreen.statusExecutingTools;
+	if (phase === 'waiting_retry') return chatScreen.statusWaitingRetry;
+	if (phase === 'finalizing') return chatScreen.statusFinalizing;
+	return chatScreen.statusThinking;
 }
 
 function getStallReasonText(
 	reason: 'no_token_no_event' | 'no_token' | 'no_event' | null,
+	chatScreen: {
+		statusNoNewTokens: string;
+		statusNoNewSubAgentEvents: string;
+		statusNoNewTokensOrEvents: string;
+		statusNoRecentProgress: string;
+	},
 ): string {
-	if (reason === 'no_token_no_event') return 'no tokens or sub-agent events';
-	if (reason === 'no_token') return 'no tokens';
-	if (reason === 'no_event') return 'no sub-agent events';
-	return 'no recent progress';
+	if (reason === 'no_token_no_event') return chatScreen.statusNoNewTokensOrEvents;
+	if (reason === 'no_token') return chatScreen.statusNoNewTokens;
+	if (reason === 'no_event') return chatScreen.statusNoNewSubAgentEvents;
+	return chatScreen.statusNoRecentProgress;
 }
 
 // Console-based markdown renderer functions
@@ -518,8 +531,8 @@ export default function HeadlessModeScreen({
 			} else {
 				// Show normal streaming status with phase and stall transparency
 				const phaseText = streamingState.isReasoning
-					? 'Deep thinking...'
-					: getHeadlessPhaseText(streamingState.currentPhase);
+					? t.chatScreen.statusDeepThinking
+					: getHeadlessPhaseText(streamingState.currentPhase, t.chatScreen);
 				const stalledForSeconds = streamingState.lastProgressAt
 					? Math.max(
 							0,
@@ -537,15 +550,17 @@ export default function HeadlessModeScreen({
 					streamingState.stallLevel === 'none'
 						? ''
 						: streamingState.stallLevel === 'critical'
-						? ` · \x1b[31m⚠ stalled? ${stalledForSeconds}s (${getStallReasonText(
+						? ` · \x1b[31m⚠ ${t.chatScreen.statusPotentiallyStalled} ${stalledForSeconds}s (${getStallReasonText(
 								streamingState.stallReason,
+								t.chatScreen,
 						  )})\x1b[37m`
-						: ` · \x1b[33m⚠ slow ${stalledForSeconds}s (${getStallReasonText(
+						: ` · \x1b[33m⚠ ${t.chatScreen.statusSlowProgress} ${stalledForSeconds}s (${getStallReasonText(
 								streamingState.stallReason,
+								t.chatScreen,
 						  )})\x1b[37m`;
 				const actionText =
 					streamingState.stallLevel === 'critical'
-						? ' · \x1b[90mEsc:interrupt D:diagnose\x1b[37m'
+						? ` · \x1b[90m${t.chatScreen.statusPressEscToInterrupt} · D:diagnose\x1b[37m`
 						: '';
 				const statusLine = `\r\x1b[96m❆\x1b[90m ${phaseText} \x1b[33m${streamingState.elapsedSeconds}s\x1b[37m · \x1b[32m↓ ${streamingState.streamTokenCount} tokens\x1b[0m${subAgentText}${stallText}${actionText}`;
 				if (statusLine !== lastStatusSnapshotRef.current) {
@@ -602,6 +617,7 @@ export default function HeadlessModeScreen({
 				console.log(
 					`\x1b[90m[诊断] phase=${streamingState.currentPhase} stall=${streamingState.stallLevel} reason=${getStallReasonText(
 						streamingState.stallReason,
+						t.chatScreen,
 					)} idle=${stalledForSeconds}s tokens=${streamingState.streamTokenCount} lastSubAgent=${
 						streamingState.lastSubAgentName || 'n/a'
 					} lastEvent=${streamingState.lastSubAgentEventType || 'n/a'}\x1b[0m`,

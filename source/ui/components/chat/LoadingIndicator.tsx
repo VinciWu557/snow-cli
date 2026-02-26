@@ -91,23 +91,24 @@ export default function LoadingIndicator({
 			return t.chatScreen.statusDeepThinking;
 		}
 		if (currentPhase === 'tooling') {
-			return 'Executing tools...';
+			return t.chatScreen.statusExecutingTools;
 		}
 		if (currentPhase === 'waiting_retry') {
-			return 'Waiting for retry...';
+			return t.chatScreen.statusWaitingRetry;
 		}
 		if (currentPhase === 'finalizing') {
-			return t.chatScreen.statusWriting;
+			return t.chatScreen.statusFinalizing;
 		}
 		return t.chatScreen.statusThinking;
 	};
 
 	const getStallReasonText = (): string => {
-		if (stallReason === 'no_token') return 'no new tokens';
-		if (stallReason === 'no_event') return 'no new sub-agent events';
+		if (stallReason === 'no_token') return t.chatScreen.statusNoNewTokens;
+		if (stallReason === 'no_event')
+			return t.chatScreen.statusNoNewSubAgentEvents;
 		if (stallReason === 'no_token_no_event')
-			return 'no new tokens or sub-agent events';
-		return 'no recent progress';
+			return t.chatScreen.statusNoNewTokensOrEvents;
+		return t.chatScreen.statusNoRecentProgress;
 	};
 
 	const stalledForSeconds = lastProgressAt
@@ -191,7 +192,12 @@ export default function LoadingIndicator({
 										<>
 											{' · '}
 											<Text color="magenta">
-												{subAgentLabel(lastSubAgentName, lastSubAgentEventType)}
+												{subAgentLabel(
+													lastSubAgentName,
+													lastSubAgentEventType,
+													t.chatScreen.statusSubAgentLabel,
+													t.chatScreen.statusSubAgentLabelWithEvent,
+												)}
 											</Text>
 										</>
 									)}
@@ -203,10 +209,10 @@ export default function LoadingIndicator({
 										dimColor={stallLevel !== 'critical'}
 									>
 										{stallLevel === 'critical'
-											? 'Potentially stalled'
-											: 'Slow progress'}{' '}
+											? t.chatScreen.statusPotentiallyStalled
+											: t.chatScreen.statusSlowProgress}{' '}
 										· {getStallReasonText()} · {stalledForSeconds}s ·
-										Press Esc to interrupt
+										{t.chatScreen.statusPressEscToInterrupt}
 									</Text>
 								)}
 							</Box>
@@ -222,7 +228,16 @@ export default function LoadingIndicator({
 	);
 }
 
-function subAgentLabel(agentName: string, eventType: string | null): string {
-	if (!eventType) return `sub-agent: ${agentName}`;
-	return `sub-agent: ${agentName} (${eventType})`;
+function subAgentLabel(
+	agentName: string,
+	eventType: string | null,
+	labelTemplate: string,
+	labelWithEventTemplate: string,
+): string {
+	if (!eventType) {
+		return labelTemplate.replace('{agentName}', agentName);
+	}
+	return labelWithEventTemplate
+		.replace('{agentName}', agentName)
+		.replace('{eventType}', eventType);
 }
