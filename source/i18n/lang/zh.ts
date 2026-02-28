@@ -723,6 +723,7 @@ export const zh: TranslationKeys = {
 		statusPotentiallyStalled: '可能卡住',
 		statusSlowProgress: '进度较慢',
 		statusNoNewTokens: '暂无新 token',
+		statusNoNewToolEvents: '暂无工具新进度事件',
 		statusNoNewSubAgentEvents: '暂无子代理新事件',
 		statusNoNewTokensOrEvents: '暂无新 token 或子代理事件',
 		statusNoRecentProgress: '暂无新进展',

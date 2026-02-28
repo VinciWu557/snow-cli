@@ -727,6 +727,7 @@ export type TranslationKeys = {
 		statusPotentiallyStalled: string;
 		statusSlowProgress: string;
 		statusNoNewTokens: string;
+		statusNoNewToolEvents: string;
 		statusNoNewSubAgentEvents: string;
 		statusNoNewTokensOrEvents: string;
 		statusNoRecentProgress: string;

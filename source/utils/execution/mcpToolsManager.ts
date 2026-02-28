@@ -34,6 +34,8 @@ import {logger} from '../core/logger.js';
 import {resourceMonitor} from '../core/resourceMonitor.js';
 import os from 'os';
 import path from 'path';
+import type {AceProgressCallback} from '../../mcp/types/aceCodeSearch.types.js';
+import type {HybridSearchRuntimeOptions} from '../../mcp/lsp/HybridCodeSearchService.js';
 
 /**
  * Extended Error interface with optional isHookFailure flag
@@ -50,6 +52,16 @@ export interface MCPTool {
 		parameters: any;
 	};
 }
+
+export interface MCPToolProgressEvent {
+	phase: string;
+	message?: string;
+	percent?: number;
+	elapsedMs?: number;
+	metadata?: Record<string, unknown>;
+}
+
+export type MCPToolProgressCallback = (event: MCPToolProgressEvent) => void;
 
 interface InternalMCPTool {
 	name: string;
@@ -967,6 +979,7 @@ export async function executeMCPTool(
 	args: any,
 	abortSignal?: AbortSignal,
 	onTokenUpdate?: (tokenCount: number) => void,
+	onProgress?: MCPToolProgressCallback,
 ): Promise<any> {
 	// Normalize args: parse stringified JSON parameters for known parameters
 	// Some AI models (e.g., Anthropic) may serialize array/object parameters as JSON strings
@@ -1343,6 +1356,22 @@ export async function executeMCPTool(
 			const {hybridCodeSearchService} = await import(
 				'../../mcp/lsp/HybridCodeSearchService.js'
 			);
+			const emitAceProgress: AceProgressCallback = event => {
+				onProgress?.({
+					phase: event.phase,
+					message: event.message,
+					percent: event.percent,
+					elapsedMs: event.elapsedMs,
+					metadata: event.metadata,
+				});
+			};
+
+			const aceRuntime: HybridSearchRuntimeOptions = {
+				onProgress: emitAceProgress,
+				abortSignal,
+				totalTimeoutMs:
+					typeof args?.timeoutMs === 'number' ? args.timeoutMs : undefined,
+			};
 
 			switch (actualToolName) {
 				case 'search_symbols':
@@ -1352,6 +1381,7 @@ export async function executeMCPTool(
 						args.language,
 						args.symbolType,
 						args.maxResults,
+						aceRuntime,
 					);
 					break;
 				case 'find_definition':
@@ -1360,12 +1390,14 @@ export async function executeMCPTool(
 						args.contextFile,
 						args.line,
 						args.column,
+						aceRuntime,
 					);
 					break;
 				case 'find_references':
 					result = await hybridCodeSearchService.findReferences(
 						args.symbolName,
 						args.maxResults,
+						aceRuntime,
 					);
 					break;
 				case 'semantic_search':
@@ -1375,6 +1407,7 @@ export async function executeMCPTool(
 						args.language,
 						args.symbolType,
 						args.maxResults,
+						aceRuntime,
 					);
 					break;
 				case 'file_outline':
@@ -1382,6 +1415,10 @@ export async function executeMCPTool(
 						maxResults: args.maxResults,
 						includeContext: args.includeContext,
 						symbolTypes: args.symbolTypes,
+						onProgress: emitAceProgress,
+						abortSignal,
+						timeoutMs:
+							typeof args?.timeoutMs === 'number' ? args.timeoutMs : undefined,
 					});
 					break;
 				case 'text_search':
@@ -1390,6 +1427,7 @@ export async function executeMCPTool(
 						args.fileGlob,
 						args.isRegex,
 						args.maxResults,
+						aceRuntime,
 					);
 					break;
 				default:

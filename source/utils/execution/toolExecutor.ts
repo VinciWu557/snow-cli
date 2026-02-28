@@ -1,4 +1,4 @@
-import {executeMCPTool} from './mcpToolsManager.js';
+import {executeMCPTool, type MCPToolProgressEvent} from './mcpToolsManager.js';
 import {subAgentService} from '../../mcp/subagent.js';
 import {runningSubAgentTracker} from './runningSubAgentTracker.js';
 import type {SubAgentMessage} from './subAgentExecutor.js';
@@ -92,6 +92,40 @@ export interface ToolResult {
 		error?: string;
 	}; // Hook error details for UI rendering
 }
+
+export type ToolExecutionEvent =
+	| {
+			type: 'batch_started';
+			totalTools: number;
+	  }
+	| {
+			type: 'tool_started';
+			toolCallId: string;
+			toolName: string;
+	  }
+	| {
+			type: 'tool_progress';
+			toolCallId: string;
+			toolName: string;
+			progress: MCPToolProgressEvent;
+	  }
+	| {
+			type: 'tool_result';
+			toolCallId: string;
+			toolName: string;
+			result: ToolResult;
+			durationMs: number;
+	  }
+	| {
+			type: 'batch_completed';
+			totalTools: number;
+			completedTools: number;
+			succeededTools: number;
+			failedTools: number;
+			durationMs: number;
+	  };
+
+export type ToolExecutionEventCallback = (event: ToolExecutionEvent) => void;
 
 export type SubAgentMessageCallback = (message: SubAgentMessage) => void;
 
@@ -210,6 +244,7 @@ export async function executeToolCall(
 	toolCall: ToolCall,
 	abortSignal?: AbortSignal,
 	onTokenUpdate?: (tokenCount: number) => void,
+	onToolProgress?: (progress: MCPToolProgressEvent) => void,
 	onSubAgentMessage?: SubAgentMessageCallback,
 	requestToolConfirmation?: ToolConfirmationCallback,
 	isToolAutoApproved?: ToolApprovalChecker,
@@ -303,9 +338,7 @@ export async function executeToolCall(
 			// Look up agent name from config for tracking
 			let agentName = agentId;
 			try {
-				const {getSubAgent} = await import(
-					'../config/subAgentConfig.js'
-				);
+				const {getSubAgent} = await import('../config/subAgentConfig.js');
 				const agentConfig = getSubAgent(agentId);
 				if (agentConfig) {
 					agentName = agentConfig.name;
@@ -374,10 +407,7 @@ export async function executeToolCall(
 					subAgentResult.injectedUserMessages.length > 0
 				) {
 					const injectedSummary = subAgentResult.injectedUserMessages
-						.map(
-							(msg: string, i: number) =>
-								`  ${i + 1}. ${msg}`,
-						)
+						.map((msg: string, i: number) => `  ${i + 1}. ${msg}`)
 						.join('\n');
 					subAgentContent = JSON.stringify({
 						...subAgentResult,
@@ -403,6 +433,7 @@ export async function executeToolCall(
 				args,
 				abortSignal,
 				onTokenUpdate,
+				onToolProgress,
 			);
 
 			// Extract multimodal content (text + images)
@@ -643,7 +674,14 @@ export async function executeToolCalls(
 	yoloMode?: boolean,
 	addToAlwaysApproved?: AddToAlwaysApprovedCallback,
 	onUserInteractionNeeded?: UserInteractionCallback,
+	onToolEvent?: ToolExecutionEventCallback,
 ): Promise<ToolResult[]> {
+	const batchStartedAt = Date.now();
+	onToolEvent?.({
+		type: 'batch_started',
+		totalTools: toolCalls.length,
+	});
+
 	// Group tool calls by their resource identifier
 	const resourceGroups = new Map<string, ToolCall[]>();
 
@@ -654,43 +692,161 @@ export async function executeToolCalls(
 		resourceGroups.set(resourceId, group);
 	}
 
-	// Execute each resource group sequentially, but execute different groups in parallel
-	const results = await Promise.all(
-		Array.from(resourceGroups.values()).map(async group => {
-			// Within the same resource group, execute sequentially
-			const groupResults: ToolResult[] = [];
-			for (const toolCall of group) {
-				const result = await executeToolCall(
-					toolCall,
-					abortSignal,
-					onTokenUpdate,
-					onSubAgentMessage,
-					requestToolConfirmation,
-					isToolAutoApproved,
-					yoloMode,
-					addToAlwaysApproved,
-					onUserInteractionNeeded,
-				);
-				groupResults.push(result);
+	let completedTools = 0;
+	let succeededTools = 0;
+	let failedTools = 0;
+	const resultMap = new Map<string, ToolResult>();
 
-				// If hook failed, stop executing remaining tools
-				if (result.hookFailed) {
-					break;
+	const buildErrorResult = (
+		toolCall: ToolCall,
+		errorMessage: string,
+	): ToolResult => ({
+		tool_call_id: toolCall.id,
+		role: 'tool',
+		content: `Error: ${errorMessage}`,
+	});
+
+	try {
+		const groupSettledResults = await Promise.allSettled(
+			Array.from(resourceGroups.values()).map(async group => {
+				// Within the same resource group, execute sequentially
+				const groupResults: ToolResult[] = [];
+				let shouldSkipRemaining = false;
+
+				for (const toolCall of group) {
+					const toolStartedAt = Date.now();
+
+					if (shouldSkipRemaining) {
+						const skippedResult = buildErrorResult(
+							toolCall,
+							'Tool execution skipped because a previous tool in the same resource group failed hook validation',
+						);
+
+						completedTools += 1;
+						failedTools += 1;
+
+						onToolEvent?.({
+							type: 'tool_result',
+							toolCallId: toolCall.id,
+							toolName: toolCall.function.name,
+							result: skippedResult,
+							durationMs: Date.now() - toolStartedAt,
+						});
+
+						groupResults.push(skippedResult);
+						continue;
+					}
+
+					onToolEvent?.({
+						type: 'tool_started',
+						toolCallId: toolCall.id,
+						toolName: toolCall.function.name,
+					});
+
+					let result: ToolResult;
+					try {
+						result = await executeToolCall(
+							toolCall,
+							abortSignal,
+							onTokenUpdate,
+							progress => {
+								onToolEvent?.({
+									type: 'tool_progress',
+									toolCallId: toolCall.id,
+									toolName: toolCall.function.name,
+									progress,
+								});
+							},
+							onSubAgentMessage,
+							requestToolConfirmation,
+							isToolAutoApproved,
+							yoloMode,
+							addToAlwaysApproved,
+							onUserInteractionNeeded,
+						);
+					} catch (error) {
+						const errorMessage =
+							error instanceof Error ? error.message : 'Tool execution failed';
+						result = buildErrorResult(toolCall, errorMessage);
+					}
+
+					completedTools += 1;
+					const isErrorResult =
+						result.hookFailed || result.content.startsWith('Error:');
+					if (isErrorResult) failedTools += 1;
+					else succeededTools += 1;
+
+					onToolEvent?.({
+						type: 'tool_result',
+						toolCallId: toolCall.id,
+						toolName: toolCall.function.name,
+						result,
+						durationMs: Date.now() - toolStartedAt,
+					});
+
+					groupResults.push(result);
+					resultMap.set(result.tool_call_id, result);
+
+					// If hook failed, stop executing remaining tools in the same resource group
+					if (result.hookFailed) {
+						shouldSkipRemaining = true;
+					}
 				}
+
+				return groupResults;
+			}),
+		);
+
+		for (const settledResult of groupSettledResults) {
+			if (settledResult.status === 'rejected') {
+				console.error(
+					'Tool execution group failed unexpectedly:',
+					settledResult.reason,
+				);
 			}
-			return groupResults;
-		}),
-	);
-
-	// Flatten results and restore original order
-	const flatResults = results.flat();
-	const resultMap = new Map(flatResults.map(r => [r.tool_call_id, r]));
-
-	return toolCalls.map(tc => {
-		const result = resultMap.get(tc.id);
-		if (!result) {
-			throw new Error(`Result not found for tool call ${tc.id}`);
 		}
-		return result;
+
+		for (const toolCall of toolCalls) {
+			if (resultMap.has(toolCall.id)) {
+				continue;
+			}
+
+			const fallbackResult = buildErrorResult(
+				toolCall,
+				'Tool execution interrupted before completion',
+			);
+			resultMap.set(toolCall.id, fallbackResult);
+			completedTools += 1;
+			failedTools += 1;
+
+			onToolEvent?.({
+				type: 'tool_result',
+				toolCallId: toolCall.id,
+				toolName: toolCall.function.name,
+				result: fallbackResult,
+				durationMs: 0,
+			});
+		}
+	} finally {
+		onToolEvent?.({
+			type: 'batch_completed',
+			totalTools: toolCalls.length,
+			completedTools,
+			succeededTools,
+			failedTools,
+			durationMs: Date.now() - batchStartedAt,
+		});
+	}
+
+	return toolCalls.map(toolCall => {
+		const result = resultMap.get(toolCall.id);
+		if (result) {
+			return result;
+		}
+
+		return buildErrorResult(
+			toolCall,
+			'Tool execution interrupted before completion',
+		);
 	});
 }

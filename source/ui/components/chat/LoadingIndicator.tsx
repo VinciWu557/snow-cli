@@ -55,8 +55,15 @@ type LoadingIndicatorProps = {
 		| 'waiting_retry'
 		| 'finalizing';
 	stallLevel: 'none' | 'warning' | 'critical';
-	stallReason: 'no_token_no_event' | 'no_token' | 'no_event' | null;
+	stallReason:
+		| 'no_model_tokens'
+		| 'no_tool_events'
+		| 'no_subagent_events'
+		| 'no_recent_progress'
+		| null;
 	lastProgressAt: number | null;
+	lastToolEventType: string | null;
+	lastToolName: string | null;
 	lastSubAgentEventType: string | null;
 	lastSubAgentName: string | null;
 };
@@ -80,6 +87,8 @@ export default function LoadingIndicator({
 	stallLevel,
 	stallReason,
 	lastProgressAt,
+	lastToolEventType,
+	lastToolName,
 	lastSubAgentEventType,
 	lastSubAgentName,
 }: LoadingIndicatorProps) {
@@ -103,11 +112,14 @@ export default function LoadingIndicator({
 	};
 
 	const getStallReasonText = (): string => {
-		if (stallReason === 'no_token') return t.chatScreen.statusNoNewTokens;
-		if (stallReason === 'no_event')
+		if (stallReason === 'no_model_tokens')
+			return t.chatScreen.statusNoNewTokens;
+		if (stallReason === 'no_tool_events')
+			return t.chatScreen.statusNoNewToolEvents;
+		if (stallReason === 'no_subagent_events')
 			return t.chatScreen.statusNoNewSubAgentEvents;
-		if (stallReason === 'no_token_no_event')
-			return t.chatScreen.statusNoNewTokensOrEvents;
+		if (stallReason === 'no_recent_progress')
+			return t.chatScreen.statusNoRecentProgress;
 		return t.chatScreen.statusNoRecentProgress;
 	};
 
@@ -171,8 +183,7 @@ export default function LoadingIndicator({
 						) : (
 							<Box flexDirection="column">
 								<Text color={theme.colors.menuSecondary} dimColor bold>
-									<ShimmerText text={getPhaseText()} />
-									(
+									<ShimmerText text={getPhaseText()} />(
 									{currentModel && (
 										<>
 											{currentModel}
@@ -188,7 +199,7 @@ export default function LoadingIndicator({
 											: streamTokenCount}{' '}
 										tokens
 									</Text>
-									{lastSubAgentName && (
+									{lastSubAgentName ? (
 										<>
 											{' · '}
 											<Text color="magenta">
@@ -200,7 +211,15 @@ export default function LoadingIndicator({
 												)}
 											</Text>
 										</>
-									)}
+									) : lastToolName ? (
+										<>
+											{' · '}
+											<Text color="yellow">
+												工具: {lastToolName}
+												{lastToolEventType ? ` (${lastToolEventType})` : ''}
+											</Text>
+										</>
+									) : null}
 									)
 								</Text>
 								{stallLevel !== 'none' && (

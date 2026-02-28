@@ -30,6 +30,7 @@ import {buildEditorContextContent} from './core/editorContextBuilder.js';
 import {initializeConversationSession} from './core/sessionInitializer.js';
 import {handleToolRejection} from './core/toolRejectionHandler.js';
 import {processToolCallsAfterStream} from './core/toolCallProcessor.js';
+import {sanitizeTerminalText} from '../../utils/security/sanitizeTerminalText.js';
 
 export type UserQuestionResult = {
 	selected: string | string[];
@@ -109,6 +110,7 @@ export type ConversationHandlerOptions = {
 			'thinking' | 'reasoning' | 'tooling' | 'waiting_retry' | 'finalizing'
 		>
 	>;
+	markToolProgress?: (eventType: string, toolName?: string) => void;
 	markSubAgentProgress?: (eventType: string, agentName?: string) => void;
 };
 
@@ -137,6 +139,7 @@ export async function handleConversationWithTools(
 		setIsReasoning,
 		setRetryStatus,
 		setCurrentPhase,
+		markToolProgress,
 		markSubAgentProgress,
 	} = options;
 
@@ -741,7 +744,10 @@ export async function handleConversationWithTools(
 				// Track latest context usage per sub-agent (keyed by agentId).
 				// This persists across setMessages calls so newly created tool_calls messages
 				// can inherit the latest context usage from the same agent.
-				const latestSubAgentCtxUsage: Record<string, { percentage: number; inputTokens: number; maxTokens: number }> = {};
+				const latestSubAgentCtxUsage: Record<
+					string,
+					{percentage: number; inputTokens: number; maxTokens: number}
+				> = {};
 				const toolResults = await executeToolCalls(
 					approvedTools,
 					controller.signal,
@@ -816,7 +822,11 @@ export async function handleConversationWithTools(
 								const msg = subAgentMessage.message as any;
 								const uiMsg = {
 									role: 'subagent' as const,
-									content: `\x1b[36m⚇ ${subAgentMessage.agentName}\x1b[0m \x1b[32m✵ Context compressed (~${formatTokenCount(msg.beforeTokens)} → ~${formatTokenCount(msg.afterTokensEstimate)})\x1b[0m`,
+									content: `\x1b[36m⚇ ${
+										subAgentMessage.agentName
+									}\x1b[0m \x1b[32m✵ Context compressed (~${formatTokenCount(
+										msg.beforeTokens,
+									)} → ~${formatTokenCount(msg.afterTokensEstimate)})\x1b[0m`,
 									streaming: false,
 									messageStatus: 'success' as const,
 									subAgent: {
@@ -921,7 +931,9 @@ export async function handleConversationWithTools(
 							if (subAgentMessage.message.type === 'progress') {
 								const progressContent =
 									subAgentMessage.message.content ||
-									`[进度] 正在执行，已耗时 ${subAgentMessage.message.elapsedSeconds || 0}s...`;
+									`[进度] 正在执行，已耗时 ${
+										subAgentMessage.message.elapsedSeconds || 0
+									}s...`;
 
 								let progressIndex = -1;
 								for (let i = prev.length - 1; i >= 0; i--) {
@@ -984,8 +996,7 @@ export async function handleConversationWithTools(
 										'spawn_sub_agent',
 									]);
 									const displayableToolCalls = toolCalls.filter(
-										(tc: any) =>
-											!internalAgentTools.has(tc.function.name),
+										(tc: any) => !internalAgentTools.has(tc.function.name),
 									);
 
 									// If all tool calls were inter-agent messages, skip UI update
@@ -995,18 +1006,17 @@ export async function handleConversationWithTools(
 
 									// Separate time-consuming tools and quick tools
 									const timeConsumingTools = displayableToolCalls.filter(
-										(tc: any) =>
-											isToolNeedTwoStepDisplay(tc.function.name),
+										(tc: any) => isToolNeedTwoStepDisplay(tc.function.name),
 									);
 									const quickTools = displayableToolCalls.filter(
-										(tc: any) =>
-											!isToolNeedTwoStepDisplay(tc.function.name),
+										(tc: any) => !isToolNeedTwoStepDisplay(tc.function.name),
 									);
 
 									const newMessages: any[] = [];
 
 									// Inherit latest context usage for this agent (cached from usage events)
-									const inheritedCtxUsage = latestSubAgentCtxUsage[subAgentMessage.agentId];
+									const inheritedCtxUsage =
+										latestSubAgentCtxUsage[subAgentMessage.agentId];
 
 									// Display time-consuming tools individually with full details (Diff, etc.)
 									for (const toolCall of timeConsumingTools) {
@@ -1296,8 +1306,8 @@ export async function handleConversationWithTools(
 									return updated;
 								}
 
-							return prev;
-						}
+								return prev;
+							}
 
 							// Find the most recent streaming body message for this agent.
 							let existingIndex = -1;
@@ -1451,15 +1461,15 @@ export async function handleConversationWithTools(
 										role: 'subagent' as const,
 										content: contentToApply,
 										streaming: true,
-											subAgent: {
-												agentId: subAgentMessage.agentId,
-												agentName: subAgentMessage.agentName,
-												isComplete: false,
-											},
-											subAgentInternal: true,
-											subAgentBody: true,
+										subAgent: {
+											agentId: subAgentMessage.agentId,
+											agentName: subAgentMessage.agentName,
+											isComplete: false,
 										},
-									];
+										subAgentInternal: true,
+										subAgentBody: true,
+									},
+								];
 							}
 
 							return prev;
@@ -1488,6 +1498,101 @@ export async function handleConversationWithTools(
 							},
 							multiSelect,
 						);
+					},
+					event => {
+						if (event.type === 'tool_started') {
+							markToolProgress?.('started', event.toolName);
+							return;
+						}
+
+						if (event.type === 'tool_progress') {
+							markToolProgress?.(event.progress.phase, event.toolName);
+
+							const progressText = sanitizeTerminalText(
+								event.progress.message,
+							).trim();
+							if (!progressText) return;
+
+							setMessages(prev => {
+								const targetIndex = prev.findIndex(
+									m =>
+										m.role === 'assistant' &&
+										m.toolPending === true &&
+										m.toolCallId === event.toolCallId,
+								);
+								if (targetIndex === -1) return prev;
+
+								const updated = [...prev];
+								const existing = updated[targetIndex];
+								if (!existing) return prev;
+
+								const nextContent = `⚡ ${event.toolName} · ${progressText}`;
+								if (existing.content === nextContent) return prev;
+
+								updated[targetIndex] = {
+									...existing,
+									content: nextContent,
+								};
+								return updated;
+							});
+							return;
+						}
+
+						if (event.type === 'tool_result') {
+							markToolProgress?.('completed', event.toolName);
+
+							setMessages(prev => {
+								const targetIndex = prev.findIndex(
+									m =>
+										m.role === 'assistant' &&
+										m.toolCallId === event.toolCallId &&
+										m.toolPending === true,
+								);
+								if (targetIndex === -1) return prev;
+
+								const updated = [...prev];
+								const existing = updated[targetIndex];
+								if (!existing) return prev;
+
+								const isError =
+									event.result.hookFailed ||
+									event.result.content.startsWith('Error:');
+								updated[targetIndex] = {
+									...existing,
+									content: `${isError ? '✗' : '✓'} ${event.toolName}`,
+									toolPending: false,
+									messageStatus: isError ? 'error' : 'success',
+								};
+								return updated;
+							});
+							return;
+						}
+
+						if (event.type === 'batch_completed') {
+							markToolProgress?.('batch_completed');
+
+							setMessages(prev => {
+								let hasPending = false;
+								const updated = prev.map(message => {
+									if (
+										message.role !== 'assistant' ||
+										message.toolPending !== true ||
+										!message.toolCallId
+									) {
+										return message;
+									}
+
+									hasPending = true;
+									return {
+										...message,
+										toolPending: false,
+										messageStatus: 'error' as const,
+									};
+								});
+
+								return hasPending ? updated : prev;
+							});
+						}
 					},
 				);
 
@@ -1800,8 +1905,7 @@ export async function handleConversationWithTools(
 					const {runningSubAgentTracker} = await import(
 						'../../utils/execution/runningSubAgentTracker.js'
 					);
-					const spawnedResults =
-						runningSubAgentTracker.drainSpawnedResults();
+					const spawnedResults = runningSubAgentTracker.drainSpawnedResults();
 					if (spawnedResults.length > 0) {
 						for (const sr of spawnedResults) {
 							const statusIcon = sr.success ? '✓' : '✗';
@@ -1826,16 +1930,17 @@ export async function handleConversationWithTools(
 									content: spawnedContent,
 								});
 							} catch (error) {
-								console.error(
-									'Failed to save spawned agent result:',
-									error,
-								);
+								console.error('Failed to save spawned agent result:', error);
 							}
 
 							// Display in UI
 							const uiMsg: Message = {
 								role: 'subagent',
-								content: `\x1b[38;2;150;120;255m⚇${statusIcon} Spawned ${sr.agentName}\x1b[0m (by ${sr.spawnedBy.agentName}): ${sr.success ? 'completed' : 'failed'}`,
+								content: `\x1b[38;2;150;120;255m⚇${statusIcon} Spawned ${
+									sr.agentName
+								}\x1b[0m (by ${sr.spawnedBy.agentName}): ${
+									sr.success ? 'completed' : 'failed'
+								}`,
 								streaming: false,
 								messageStatus: sr.success ? 'success' : 'error',
 								subAgent: {
@@ -1849,10 +1954,7 @@ export async function handleConversationWithTools(
 						}
 					}
 				} catch (error) {
-					console.error(
-						'Failed to process spawned agent results:',
-						error,
-					);
+					console.error('Failed to process spawned agent results:', error);
 				}
 
 				// Check if there are pending user messages to insert

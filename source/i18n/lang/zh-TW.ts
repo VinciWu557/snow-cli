@@ -724,6 +724,7 @@ export const zhTW: TranslationKeys = {
 		statusPotentiallyStalled: '可能卡住',
 		statusSlowProgress: '進度較慢',
 		statusNoNewTokens: '暫無新 token',
+		statusNoNewToolEvents: '暫無工具新進度事件',
 		statusNoNewSubAgentEvents: '暫無子代理新事件',
 		statusNoNewTokensOrEvents: '暫無新 token 或子代理事件',
 		statusNoRecentProgress: '暫無新進展',

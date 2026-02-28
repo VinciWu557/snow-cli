@@ -217,8 +217,7 @@ export const en: TranslationKeys = {
 		manualInputSubtitle: 'Enter model name manually',
 		manualInputHint: 'Press Enter to confirm, Esc to cancel',
 		loadingError: '⚠ Failed to load models from API',
-		requestMethodChat:
-			'Chat Completions - Modern chat API (DeepSeek)',
+		requestMethodChat: 'Chat Completions - Modern chat API (DeepSeek)',
 		requestMethodResponses:
 			'Responses - New responses API (2025, with built-in tools)',
 		requestMethodGemini: 'Gemini - Google Gemini API',
@@ -768,6 +767,7 @@ export const en: TranslationKeys = {
 		statusPotentiallyStalled: 'Potentially stalled',
 		statusSlowProgress: 'Slow progress',
 		statusNoNewTokens: 'no new tokens',
+		statusNoNewToolEvents: 'no new tool progress events',
 		statusNoNewSubAgentEvents: 'no new sub-agent events',
 		statusNoNewTokensOrEvents: 'no new tokens or sub-agent events',
 		statusNoRecentProgress: 'no recent progress',

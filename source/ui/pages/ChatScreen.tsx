@@ -1216,6 +1216,8 @@ export default function ChatScreen({
 				stallLevel={streamingState.stallLevel}
 				stallReason={streamingState.stallReason}
 				lastProgressAt={streamingState.lastProgressAt}
+				lastToolEventType={streamingState.lastToolEventType}
+				lastToolName={streamingState.lastToolName}
 				lastSubAgentEventType={streamingState.lastSubAgentEventType}
 				lastSubAgentName={streamingState.lastSubAgentName}
 			/>

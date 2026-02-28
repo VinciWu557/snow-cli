@@ -31,7 +31,14 @@ export type StreamingPhase =
 
 export type StallLevel = 'none' | 'warning' | 'critical';
 
-export type StallReason = 'no_token_no_event' | 'no_token' | 'no_event' | null;
+export type StallReason =
+	| 'no_model_tokens'
+	| 'no_tool_events'
+	| 'no_subagent_events'
+	| 'no_recent_progress'
+	| null;
+
+export type ProgressActor = 'model' | 'tool' | 'subagent' | 'system' | null;
 
 const STALL_WARNING_SECONDS = 20;
 const STALL_CRITICAL_SECONDS = 45;
@@ -57,10 +64,20 @@ export function useStreamingState() {
 	const [currentPhase, setCurrentPhase] = useState<StreamingPhase>('thinking');
 	const [lastProgressAt, setLastProgressAt] = useState<number | null>(null);
 	const [lastTokenAt, setLastTokenAt] = useState<number | null>(null);
-	const [lastSubAgentEventAt, setLastSubAgentEventAt] = useState<number | null>(null);
-	const [lastSubAgentEventType, setLastSubAgentEventType] =
-		useState<string | null>(null);
+	const [lastToolEventAt, setLastToolEventAt] = useState<number | null>(null);
+	const [lastToolEventType, setLastToolEventType] = useState<string | null>(
+		null,
+	);
+	const [lastToolName, setLastToolName] = useState<string | null>(null);
+	const [lastSubAgentEventAt, setLastSubAgentEventAt] = useState<number | null>(
+		null,
+	);
+	const [lastSubAgentEventType, setLastSubAgentEventType] = useState<
+		string | null
+	>(null);
 	const [lastSubAgentName, setLastSubAgentName] = useState<string | null>(null);
+	const [lastProgressActor, setLastProgressActor] =
+		useState<ProgressActor>(null);
 	const [stallLevel, setStallLevel] = useState<StallLevel>('none');
 	const [stallReason, setStallReason] = useState<StallReason>(null);
 
@@ -102,6 +119,7 @@ export function useStreamingState() {
 			const now = Date.now();
 			setLastSubAgentEventAt(now);
 			setLastProgressAt(now);
+			setLastProgressActor('subagent');
 			setLastSubAgentEventType(eventType);
 			if (agentName) setLastSubAgentName(agentName);
 
@@ -121,28 +139,45 @@ export function useStreamingState() {
 		[],
 	);
 
-	const setStreamTokenCount: React.Dispatch<React.SetStateAction<number>> =
-		action => {
-			setStreamTokenCountBase(prev => {
-				const next = typeof action === 'function' ? action(prev) : action;
-				if (next > prev) {
-					const now = Date.now();
-					setLastTokenAt(now);
-					setLastProgressAt(now);
-				}
-				return next;
-			});
-		};
+	const markToolProgress = useCallback(
+		(eventType: string, toolName?: string) => {
+			const now = Date.now();
+			setLastToolEventAt(now);
+			setLastProgressAt(now);
+			setLastProgressActor('tool');
+			setLastToolEventType(eventType);
+			if (toolName) setLastToolName(toolName);
+			setCurrentPhase('tooling');
+		},
+		[],
+	);
 
-	const setIsReasoning: React.Dispatch<React.SetStateAction<boolean>> =
-		action => {
-			setIsReasoningBase(action);
-		};
+	const setStreamTokenCount: React.Dispatch<
+		React.SetStateAction<number>
+	> = action => {
+		setStreamTokenCountBase(prev => {
+			const next = typeof action === 'function' ? action(prev) : action;
+			if (next > prev) {
+				const now = Date.now();
+				setLastTokenAt(now);
+				setLastProgressAt(now);
+				setLastProgressActor('model');
+			}
+			return next;
+		});
+	};
 
-	const setRetryStatus: React.Dispatch<React.SetStateAction<RetryStatus | null>> =
-		action => {
-			setRetryStatusBase(action);
-		};
+	const setIsReasoning: React.Dispatch<
+		React.SetStateAction<boolean>
+	> = action => {
+		setIsReasoningBase(action);
+	};
+
+	const setRetryStatus: React.Dispatch<
+		React.SetStateAction<RetryStatus | null>
+	> = action => {
+		setRetryStatusBase(action);
+	};
 
 	const evaluateStall = useCallback(() => {
 		if (!isStreaming) {
@@ -155,14 +190,26 @@ export function useStreamingState() {
 		const baseline = lastProgressAt ?? timerStartTime ?? now;
 		const idleSeconds = Math.floor((now - baseline) / 1000);
 
-		const hasToken = !!lastTokenAt;
-		const hasSubAgentEvent = !!lastSubAgentEventAt;
-		let nextReason: StallReason = null;
-		if (!hasToken && !hasSubAgentEvent) nextReason = 'no_token_no_event';
-		else if (!hasToken) nextReason = 'no_token';
-		else if (!hasSubAgentEvent && currentPhase === 'tooling')
-			nextReason = 'no_event';
-		else if (!hasSubAgentEvent) nextReason = 'no_token';
+		let nextReason: StallReason = 'no_recent_progress';
+
+		if (currentPhase === 'tooling') {
+			if (lastProgressActor === 'subagent') {
+				nextReason = 'no_subagent_events';
+			} else if (lastProgressActor === 'tool') {
+				nextReason = 'no_tool_events';
+			} else if (
+				lastSubAgentEventAt &&
+				(!lastToolEventAt || lastSubAgentEventAt >= lastToolEventAt)
+			) {
+				nextReason = 'no_subagent_events';
+			} else {
+				nextReason = 'no_tool_events';
+			}
+		} else if (currentPhase === 'thinking' || currentPhase === 'reasoning') {
+			nextReason = 'no_model_tokens';
+		} else if (currentPhase === 'finalizing') {
+			nextReason = 'no_recent_progress';
+		}
 
 		if (idleSeconds >= STALL_CRITICAL_SECONDS) {
 			setStallLevel('critical');
@@ -179,8 +226,10 @@ export function useStreamingState() {
 	}, [
 		isStreaming,
 		lastProgressAt,
+		lastToolEventAt,
 		lastTokenAt,
 		lastSubAgentEventAt,
+		lastProgressActor,
 		timerStartTime,
 		currentPhase,
 	]);
@@ -206,14 +255,19 @@ export function useStreamingState() {
 			setCurrentPhase('thinking');
 			setLastProgressAt(now);
 			setLastTokenAt(null);
+			setLastToolEventAt(null);
+			setLastToolEventType(null);
+			setLastToolName(null);
 			setLastSubAgentEventAt(null);
 			setLastSubAgentEventType(null);
 			setLastSubAgentName(null);
+			setLastProgressActor(null);
 			setStallLevel('none');
 			setStallReason(null);
 		} else if (!isStreaming && timerStartTime !== null) {
 			setTimerStartTime(null);
 			setCurrentPhase('thinking');
+			setLastProgressActor(null);
 			setStallLevel('none');
 			setStallReason(null);
 		}
@@ -306,11 +360,16 @@ export function useStreamingState() {
 		setCurrentPhase: setCurrentPhaseSafe,
 		lastProgressAt,
 		lastTokenAt,
+		lastToolEventAt,
+		lastToolEventType,
+		lastToolName,
 		lastSubAgentEventAt,
 		lastSubAgentEventType,
 		lastSubAgentName,
+		lastProgressActor,
 		stallLevel,
 		stallReason,
+		markToolProgress,
 		markSubAgentProgress,
 		evaluateStall,
 	};

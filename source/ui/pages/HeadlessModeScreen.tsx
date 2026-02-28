@@ -43,17 +43,25 @@ function getHeadlessPhaseText(
 }
 
 function getStallReasonText(
-	reason: 'no_token_no_event' | 'no_token' | 'no_event' | null,
+	reason:
+		| 'no_model_tokens'
+		| 'no_tool_events'
+		| 'no_subagent_events'
+		| 'no_recent_progress'
+		| null,
 	chatScreen: {
 		statusNoNewTokens: string;
+		statusNoNewToolEvents: string;
 		statusNoNewSubAgentEvents: string;
 		statusNoNewTokensOrEvents: string;
 		statusNoRecentProgress: string;
 	},
 ): string {
-	if (reason === 'no_token_no_event') return chatScreen.statusNoNewTokensOrEvents;
-	if (reason === 'no_token') return chatScreen.statusNoNewTokens;
-	if (reason === 'no_event') return chatScreen.statusNoNewSubAgentEvents;
+	if (reason === 'no_model_tokens') return chatScreen.statusNoNewTokens;
+	if (reason === 'no_tool_events') return chatScreen.statusNoNewToolEvents;
+	if (reason === 'no_subagent_events')
+		return chatScreen.statusNoNewSubAgentEvents;
+	if (reason === 'no_recent_progress') return chatScreen.statusNoRecentProgress;
 	return chatScreen.statusNoRecentProgress;
 }
 
@@ -453,7 +461,11 @@ export default function HeadlessModeScreen({
 				// Render thinking when text content is empty so users can still see model progress output.
 				if (lastMessage.thinking) {
 					console.log('\n\x1b[90m┌─ Thinking\x1b[0m');
-					console.log(`\x1b[90m│  ${cleanThinkingInHeadless(lastMessage.thinking)}\x1b[0m`);
+					console.log(
+						`\x1b[90m│  ${cleanThinkingInHeadless(
+							lastMessage.thinking,
+						)}\x1b[0m`,
+					);
 					console.log('\x1b[90m└─ End Thinking\x1b[0m');
 				}
 				if (lastMessage.content) {
@@ -545,16 +557,26 @@ export default function HeadlessModeScreen({
 								? `:${streamingState.lastSubAgentEventType}`
 								: ''
 					  }\x1b[37m`
+					: streamingState.lastToolName
+					? ` · \x1b[33m⛭ ${streamingState.lastToolName}${
+							streamingState.lastToolEventType
+								? `:${streamingState.lastToolEventType}`
+								: ''
+					  }\x1b[37m`
 					: '';
 				const stallText =
 					streamingState.stallLevel === 'none'
 						? ''
 						: streamingState.stallLevel === 'critical'
-						? ` · \x1b[31m⚠ ${t.chatScreen.statusPotentiallyStalled} ${stalledForSeconds}s (${getStallReasonText(
+						? ` · \x1b[31m⚠ ${
+								t.chatScreen.statusPotentiallyStalled
+						  } ${stalledForSeconds}s (${getStallReasonText(
 								streamingState.stallReason,
 								t.chatScreen,
 						  )})\x1b[37m`
-						: ` · \x1b[33m⚠ ${t.chatScreen.statusSlowProgress} ${stalledForSeconds}s (${getStallReasonText(
+						: ` · \x1b[33m⚠ ${
+								t.chatScreen.statusSlowProgress
+						  } ${stalledForSeconds}s (${getStallReasonText(
 								streamingState.stallReason,
 								t.chatScreen,
 						  )})\x1b[37m`;
@@ -566,9 +588,7 @@ export default function HeadlessModeScreen({
 				if (statusLine !== lastStatusSnapshotRef.current) {
 					lastStatusSnapshotRef.current = statusLine;
 				}
-				process.stdout.write(
-					lastStatusSnapshotRef.current,
-				);
+				process.stdout.write(lastStatusSnapshotRef.current);
 			}
 		}
 	}, [
@@ -579,6 +599,8 @@ export default function HeadlessModeScreen({
 		streamingState.streamTokenCount,
 		streamingState.retryStatus,
 		streamingState.lastProgressAt,
+		streamingState.lastToolEventType,
+		streamingState.lastToolName,
 		streamingState.lastSubAgentEventType,
 		streamingState.lastSubAgentName,
 		streamingState.stallLevel,
@@ -615,10 +637,16 @@ export default function HeadlessModeScreen({
 					: 0;
 				process.stdout.write('\r\x1b[K');
 				console.log(
-					`\x1b[90m[诊断] phase=${streamingState.currentPhase} stall=${streamingState.stallLevel} reason=${getStallReasonText(
+					`\x1b[90m[诊断] phase=${streamingState.currentPhase} stall=${
+						streamingState.stallLevel
+					} reason=${getStallReasonText(
 						streamingState.stallReason,
 						t.chatScreen,
-					)} idle=${stalledForSeconds}s tokens=${streamingState.streamTokenCount} lastSubAgent=${
+					)} idle=${stalledForSeconds}s tokens=${
+						streamingState.streamTokenCount
+					} lastTool=${streamingState.lastToolName || 'n/a'} toolEvent=${
+						streamingState.lastToolEventType || 'n/a'
+					} lastSubAgent=${
 						streamingState.lastSubAgentName || 'n/a'
 					} lastEvent=${streamingState.lastSubAgentEventType || 'n/a'}\x1b[0m`,
 				);
@@ -632,7 +660,11 @@ export default function HeadlessModeScreen({
 
 		return () => {
 			process.stdin.off('data', onData);
-			if (process.stdin.isTTY && process.stdin.setRawMode && !isWaitingForInput) {
+			if (
+				process.stdin.isTTY &&
+				process.stdin.setRawMode &&
+				!isWaitingForInput
+			) {
 				process.stdin.setRawMode(false);
 			}
 		};
@@ -645,6 +677,8 @@ export default function HeadlessModeScreen({
 		streamingState.stallReason,
 		streamingState.streamTokenCount,
 		streamingState.lastProgressAt,
+		streamingState.lastToolEventType,
+		streamingState.lastToolName,
 		streamingState.lastSubAgentEventType,
 		streamingState.lastSubAgentName,
 		lastDiagnosticAt,
@@ -817,6 +851,7 @@ export default function HeadlessModeScreen({
 				setIsReasoning: streamingState.setIsReasoning,
 				setRetryStatus: streamingState.setRetryStatus,
 				setCurrentPhase: streamingState.setCurrentPhase,
+				markToolProgress: streamingState.markToolProgress,
 				markSubAgentProgress: streamingState.markSubAgentProgress,
 			});
 		} catch (error) {
