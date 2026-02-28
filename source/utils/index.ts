@@ -5,6 +5,7 @@ import './commands/addDir.js';
 import './commands/agent.js';
 import './commands/clear.js';
 import './commands/compact.js';
+import './commands/copyLast.js';
 import './commands/custom.js';
 import './commands/diff.js';
 import './commands/export.js';

@@ -8,6 +8,10 @@ import {
 	withRetryGenerator,
 	parseJsonWithFix,
 } from '../utils/core/retryUtils.js';
+import {
+	createIdleTimeoutGuard,
+	StreamIdleTimeoutError,
+} from '../utils/core/streamGuards.js';
 import type {
 	ChatMessage,
 	ToolCall,
@@ -359,18 +363,49 @@ function convertToResponseInput(
  */
 async function* parseSSEStream(
 	reader: ReadableStreamDefaultReader<Uint8Array>,
+	abortSignal?: AbortSignal,
+	idleTimeoutMs?: number,
 ): AsyncGenerator<any, void, unknown> {
 	const decoder = new TextDecoder();
 	let buffer = '';
 
+	// 创建空闲超时保护器
+	const guard = createIdleTimeoutGuard({
+		reader,
+		idleTimeoutMs,
+		onTimeout: () => {
+			throw new StreamIdleTimeoutError(
+				`No data received for ${idleTimeoutMs}ms`,
+				idleTimeoutMs,
+			);
+		},
+	});
+
 	try {
 		while (true) {
+			// 用户主动中断时立即标记丢弃,避免延迟消息外泄
+			if (abortSignal?.aborted) {
+				guard.abandon();
+				return;
+			}
+
 			const {done, value} = await reader.read();
 
+			// 检查是否有超时错误需要在读取循环中抛出(确保被正确的 try/catch 捕获)
+			const timeoutError = guard.getTimeoutError();
+			if (timeoutError) {
+				throw timeoutError;
+			}
+
+			// 检查是否已被丢弃(竞态条件防护)
+			if (guard.isAbandoned()) {
+				continue;
+			}
+
 			if (done) {
-				// ✅ 关键修复：检查buffer是否有残留数据
+				// 连接异常中断时,残留半包不应被静默丢弃,应抛出可重试错误
 				if (buffer.trim()) {
-					// 连接异常中断，抛出明确错误
+					// 连接异常中断,抛出明确错误
 					throw new Error(
 						`Stream terminated unexpectedly with incomplete data: ${buffer.substring(
 							0,
@@ -393,25 +428,40 @@ async function* parseSSEStream(
 					return;
 				}
 
-				// Handle both "event: " and "event:" formats
+				// 处理 "event: " 和 "event:" 两种格式
 				if (trimmed.startsWith('event:')) {
-					// Event type, will be followed by data
+					// 事件类型,后面会跟随数据
 					continue;
 				}
 
-				// Handle both "data: " and "data:" formats
+				// 处理 "data: " 和 "data:" 两种格式
 				if (trimmed.startsWith('data:')) {
 					const data = trimmed.startsWith('data: ')
 						? trimmed.slice(6)
 						: trimmed.slice(5);
 					const parseResult = parseJsonWithFix(data, {
-						toolName: 'Responses API SSE stream',
+						toolName: 'Responses API SSE 流',
 						logWarning: false,
 						logError: true,
 					});
 
 					if (parseResult.success) {
-						yield parseResult.data;
+						const event = parseResult.data;
+						const hasBusinessDelta =
+							(event?.type === 'response.output_text.delta' && event?.delta) ||
+							(event?.type === 'response.reasoning_summary_text.delta' &&
+								event?.delta) ||
+							(event?.type === 'response.function_call_arguments.delta' &&
+								event?.delta) ||
+							(event?.type === 'response.output_item.added' &&
+								event?.item?.type === 'function_call');
+						if (hasBusinessDelta) {
+							guard.touch();
+						}
+						// yield 前检查是否已被丢弃
+						if (!guard.isAbandoned()) {
+							yield event;
+						}
 					}
 				}
 			}
@@ -423,6 +473,8 @@ async function* parseSSEStream(
 			remainingBuffer: buffer.substring(0, 200),
 		});
 		throw error;
+	} finally {
+		guard.dispose();
 	}
 }
 
@@ -578,11 +630,14 @@ export async function* createStreamingResponse(
 						encrypted_content?: string;
 				  }
 				| undefined;
+			const idleTimeoutMs = (config.streamIdleTimeoutSec ?? 180) * 1000;
 
-			for await (const chunk of parseSSEStream(response.body.getReader())) {
-				if (abortSignal?.aborted) {
-					return;
-				}
+			for await (const chunk of parseSSEStream(
+				response.body.getReader(),
+				abortSignal,
+				idleTimeoutMs,
+			)) {
+				// abort 由 parseSSEStream 统一处理,避免重复分支导致行为漂移
 
 				// Responses API 使用 SSE 事件格式
 				const eventType = chunk.type;

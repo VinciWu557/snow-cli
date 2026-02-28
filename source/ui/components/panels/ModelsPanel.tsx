@@ -64,7 +64,13 @@ export const ModelsPanel: React.FC<Props> = ({
 	const [requestMethod, setRequestMethod] = useState<RequestMethod>('chat');
 	const [showThinking, setShowThinking] = useState(true);
 	const [thinkingEnabled, setThinkingEnabled] = useState(false);
+	const [thinkingMode, setThinkingMode] = useState<'tokens' | 'adaptive'>(
+		'tokens',
+	);
 	const [thinkingBudgetTokens, setThinkingBudgetTokens] = useState(10000);
+	const [thinkingEffort, setThinkingEffort] = useState<
+		'low' | 'medium' | 'high' | 'max'
+	>('high');
 	const [geminiThinkingEnabled, setGeminiThinkingEnabled] = useState(false);
 	const [geminiThinkingBudget, setGeminiThinkingBudget] = useState(1024);
 	const [responsesReasoningEnabled, setResponsesReasoningEnabled] =
@@ -72,11 +78,12 @@ export const ModelsPanel: React.FC<Props> = ({
 	const [responsesReasoningEffort, setResponsesReasoningEffort] =
 		useState<ResponsesReasoningEffort>('high');
 
-	// 思考页的聚焦索引：0=显示思考, 1=启用思考, 2=思考强度
+	// 思考页的聚焦索引：0=显示思考, 1=启用思考, 2=思考模式, 3=思考强度(tokens/effort)
 	const [thinkingFocusIndex, setThinkingFocusIndex] = useState(0);
 	const [thinkingInputMode, setThinkingInputMode] =
 		useState<ThinkingInputMode>(null);
 	const [thinkingInputValue, setThinkingInputValue] = useState('');
+	const [isThinkingModeSelecting, setIsThinkingModeSelecting] = useState(false);
 	const [isThinkingEffortSelecting, setIsThinkingEffortSelecting] =
 		useState(false);
 
@@ -105,8 +112,14 @@ export const ModelsPanel: React.FC<Props> = ({
 		const cfg = getOpenAiConfig();
 		setRequestMethod(cfg.requestMethod || 'chat');
 		setShowThinking(cfg.showThinking !== false); // default true
-		setThinkingEnabled(cfg.thinking?.type === 'enabled' || false);
+		setThinkingEnabled(
+			cfg.thinking?.type === 'enabled' ||
+				cfg.thinking?.type === 'adaptive' ||
+				false,
+		);
+		setThinkingMode(cfg.thinking?.type === 'adaptive' ? 'adaptive' : 'tokens');
 		setThinkingBudgetTokens(cfg.thinking?.budget_tokens || 10000);
+		setThinkingEffort(cfg.thinking?.effort || 'high');
 		setGeminiThinkingEnabled((cfg as any).geminiThinking?.enabled || false);
 		setGeminiThinkingBudget((cfg as any).geminiThinking?.budget || 1024);
 		setResponsesReasoningEnabled(
@@ -242,7 +255,9 @@ export const ModelsPanel: React.FC<Props> = ({
 
 	const thinkingStrengthValue = useMemo(() => {
 		if (requestMethod === 'anthropic') {
-			return String(thinkingBudgetTokens);
+			return thinkingMode === 'adaptive'
+				? thinkingEffort
+				: String(thinkingBudgetTokens);
 		}
 		if (requestMethod === 'gemini') {
 			return String(geminiThinkingBudget);
@@ -253,7 +268,9 @@ export const ModelsPanel: React.FC<Props> = ({
 		return t.modelsPanel.notSupported;
 	}, [
 		requestMethod,
+		thinkingMode,
 		thinkingBudgetTokens,
+		thinkingEffort,
 		geminiThinkingBudget,
 		responsesReasoningEffort,
 		t,
@@ -284,7 +301,12 @@ export const ModelsPanel: React.FC<Props> = ({
 					setThinkingEnabled(next);
 					await updateOpenAiConfig({
 						thinking: next
-							? {type: 'enabled' as const, budget_tokens: thinkingBudgetTokens}
+							? thinkingMode === 'adaptive'
+								? {type: 'adaptive' as const, effort: thinkingEffort}
+								: {
+										type: 'enabled' as const,
+										budget_tokens: thinkingBudgetTokens,
+								  }
 							: undefined,
 					} as any);
 					return;
@@ -323,7 +345,9 @@ export const ModelsPanel: React.FC<Props> = ({
 		},
 		[
 			requestMethod,
+			thinkingMode,
 			thinkingBudgetTokens,
+			thinkingEffort,
 			geminiThinkingBudget,
 			responsesReasoningEffort,
 		],
@@ -336,7 +360,49 @@ export const ModelsPanel: React.FC<Props> = ({
 				setThinkingBudgetTokens(next);
 				await updateOpenAiConfig({
 					thinking: thinkingEnabled
-						? {type: 'enabled' as const, budget_tokens: next}
+						? thinkingMode === 'adaptive'
+							? {type: 'adaptive' as const, effort: thinkingEffort}
+							: {type: 'enabled' as const, budget_tokens: next}
+						: undefined,
+				} as any);
+			} catch (err) {
+				const message =
+					err instanceof Error ? err.message : t.modelsPanel.saveFailed;
+				setErrorMessage(message);
+			}
+		},
+		[thinkingEnabled, thinkingMode, thinkingEffort],
+	);
+
+	const applyThinkingMode = useCallback(
+		async (next: 'tokens' | 'adaptive') => {
+			setErrorMessage('');
+			try {
+				setThinkingMode(next);
+				await updateOpenAiConfig({
+					thinking: thinkingEnabled
+						? next === 'adaptive'
+							? {type: 'adaptive' as const, effort: thinkingEffort}
+							: {type: 'enabled' as const, budget_tokens: thinkingBudgetTokens}
+						: undefined,
+				} as any);
+			} catch (err) {
+				const message =
+					err instanceof Error ? err.message : t.modelsPanel.saveFailed;
+				setErrorMessage(message);
+			}
+		},
+		[thinkingEnabled, thinkingEffort, thinkingBudgetTokens],
+	);
+
+	const applyThinkingEffort = useCallback(
+		async (next: 'low' | 'medium' | 'high' | 'max') => {
+			setErrorMessage('');
+			try {
+				setThinkingEffort(next);
+				await updateOpenAiConfig({
+					thinking: thinkingEnabled
+						? {type: 'adaptive' as const, effort: next}
 						: undefined,
 				} as any);
 			} catch (err) {
@@ -413,6 +479,10 @@ export const ModelsPanel: React.FC<Props> = ({
 				if (thinkingInputMode) {
 					setThinkingInputMode(null);
 					setThinkingInputValue('');
+					return;
+				}
+				if (isThinkingModeSelecting) {
+					setIsThinkingModeSelecting(false);
 					return;
 				}
 				if (isThinkingEffortSelecting) {
@@ -501,7 +571,7 @@ export const ModelsPanel: React.FC<Props> = ({
 			}
 
 			// In list selection modes, avoid switching tabs or triggering other actions.
-			if (isThinkingEffortSelecting) {
+			if (isThinkingModeSelecting || isThinkingEffortSelecting) {
 				return;
 			}
 
@@ -520,12 +590,14 @@ export const ModelsPanel: React.FC<Props> = ({
 			if (activeTab === 'thinking') {
 				if (key.upArrow) {
 					// 向上切换配置项（循环）
-					setThinkingFocusIndex(prev => (prev === 0 ? 2 : prev - 1));
+					const maxIndex = requestMethod === 'anthropic' ? 3 : 2;
+					setThinkingFocusIndex(prev => (prev === 0 ? maxIndex : prev - 1));
 					return;
 				}
 				if (key.downArrow) {
 					// 向下切换配置项（循环）
-					setThinkingFocusIndex(prev => (prev === 2 ? 0 : prev + 1));
+					const maxIndex = requestMethod === 'anthropic' ? 3 : 2;
+					setThinkingFocusIndex(prev => (prev === maxIndex ? 0 : prev + 1));
 					return;
 				}
 				if (key.return) {
@@ -536,11 +608,25 @@ export const ModelsPanel: React.FC<Props> = ({
 					} else if (thinkingFocusIndex === 1) {
 						// 切换启用思考
 						void applyThinkingEnabled(!thinkingEnabledValue);
-					} else if (thinkingFocusIndex === 2) {
+					} else if (
+						thinkingFocusIndex === 2 &&
+						requestMethod === 'anthropic'
+					) {
+						// 切换思考模式（仅 anthropic）- 使用下拉框选择
+						setIsThinkingModeSelecting(true);
+					} else if (
+						(thinkingFocusIndex === 3 && requestMethod === 'anthropic') ||
+						(thinkingFocusIndex === 2 && requestMethod !== 'anthropic')
+					) {
 						// 设置思考强度
 						if (requestMethod === 'anthropic') {
-							setThinkingInputMode('anthropicBudgetTokens');
-							setThinkingInputValue(thinkingBudgetTokens.toString());
+							if (thinkingMode === 'tokens') {
+								setThinkingInputMode('anthropicBudgetTokens');
+								setThinkingInputValue(thinkingBudgetTokens.toString());
+							} else {
+								// adaptive mode - show effort selector
+								setIsThinkingEffortSelecting(true);
+							}
 						} else if (requestMethod === 'gemini') {
 							setThinkingInputMode('geminiThinkingBudget');
 							setThinkingInputValue(geminiThinkingBudget.toString());
@@ -699,15 +785,35 @@ export const ModelsPanel: React.FC<Props> = ({
 							{thinkingEnabledValue ? '[✓]' : '[ ]'}
 						</Text>
 					</Box>
+					{requestMethod === 'anthropic' && (
+						<Box>
+							<Text
+								color={
+									thinkingFocusIndex === 2
+										? theme.colors.menuSelected
+										: theme.colors.menuNormal
+								}
+							>
+								{thinkingFocusIndex === 2 ? '❯ ' : '  '}
+								{t.configScreen.thinkingMode}
+							</Text>
+							<Text color={theme.colors.menuSelected}>
+								{' '}
+								{thinkingMode === 'tokens'
+									? t.configScreen.thinkingModeTokens
+									: t.configScreen.thinkingModeAdaptive}
+							</Text>
+						</Box>
+					)}
 					<Box>
 						<Text
 							color={
-								thinkingFocusIndex === 2
+								thinkingFocusIndex === 3
 									? theme.colors.menuSelected
 									: theme.colors.menuNormal
 							}
 						>
-							{thinkingFocusIndex === 2 ? '❯ ' : '  '}
+							{thinkingFocusIndex === 3 ? '❯ ' : '  '}
 							{t.modelsPanel.thinkingStrength}
 						</Text>
 						<Text color={theme.colors.menuSelected}>
@@ -735,16 +841,42 @@ export const ModelsPanel: React.FC<Props> = ({
 						</Box>
 					)}
 
+					{isThinkingModeSelecting && (
+						<Box marginTop={1}>
+							<ScrollableSelectInput
+								items={[
+									{label: t.configScreen.thinkingModeTokens, value: 'tokens'},
+									{
+										label: t.configScreen.thinkingModeAdaptive,
+										value: 'adaptive',
+									},
+								]}
+								initialIndex={thinkingMode === 'tokens' ? 0 : 1}
+								isFocused={true}
+								onSelect={item => {
+									void applyThinkingMode(item.value as 'tokens' | 'adaptive');
+									setIsThinkingModeSelecting(false);
+								}}
+							/>
+						</Box>
+					)}
+
 					{isThinkingEffortSelecting && (
 						<Box marginTop={1}>
 							<ScrollableSelectInput
-								items={(
-									[
-										{label: 'low', value: 'low'},
-										{label: 'medium', value: 'medium'},
-										{label: 'high', value: 'high'},
-										{label: 'xhigh', value: 'xhigh'},
-									] as Array<{label: string; value: ResponsesReasoningEffort}>
+								items={(requestMethod === 'anthropic'
+									? [
+											{label: 'low', value: 'low'},
+											{label: 'medium', value: 'medium'},
+											{label: 'high', value: 'high'},
+											{label: 'max', value: 'max'},
+									  ]
+									: [
+											{label: 'low', value: 'low'},
+											{label: 'medium', value: 'medium'},
+											{label: 'high', value: 'high'},
+											{label: 'xhigh', value: 'xhigh'},
+									  ]
 								).map(i => ({
 									label: i.label,
 									value: i.value,
@@ -753,28 +885,40 @@ export const ModelsPanel: React.FC<Props> = ({
 								disableNumberShortcuts={true}
 								initialIndex={Math.max(
 									0,
-									(['low', 'medium', 'high', 'xhigh'] as const).indexOf(
-										responsesReasoningEffort,
-									),
+									requestMethod === 'anthropic'
+										? (['low', 'medium', 'high', 'max'] as const).indexOf(
+												thinkingEffort,
+										  )
+										: (['low', 'medium', 'high', 'xhigh'] as const).indexOf(
+												responsesReasoningEffort,
+										  ),
 								)}
 								isFocused={true}
 								onSelect={item => {
-									void applyResponsesEffort(
-										item.value as ResponsesReasoningEffort,
-									);
+									if (requestMethod === 'anthropic') {
+										void applyThinkingEffort(
+											item.value as 'low' | 'medium' | 'high' | 'max',
+										);
+									} else {
+										void applyResponsesEffort(
+											item.value as ResponsesReasoningEffort,
+										);
+									}
 									setIsThinkingEffortSelecting(false);
 								}}
 							/>
 						</Box>
 					)}
 
-					{!thinkingInputMode && !isThinkingEffortSelecting && (
-						<Box marginTop={1}>
-							<Text dimColor color={theme.colors.menuSecondary}>
-								{t.modelsPanel.navigationHint}
-							</Text>
-						</Box>
-					)}
+					{!thinkingInputMode &&
+						!isThinkingModeSelecting &&
+						!isThinkingEffortSelecting && (
+							<Box marginTop={1}>
+								<Text dimColor color={theme.colors.menuSecondary}>
+									{t.modelsPanel.navigationHint}
+								</Text>
+							</Box>
+						)}
 				</Box>
 			) : manualInputMode ? (
 				<Box flexDirection="column" paddingX={1} paddingY={0}>

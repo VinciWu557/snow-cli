@@ -81,6 +81,11 @@ const CommandPanel = memo(
 			return null;
 		}
 
+		// Don't show panel if no commands found
+		if (commands.length === 0) {
+			return null;
+		}
+
 		// Show processing message if conversation is in progress
 		if (isProcessing) {
 			return (
@@ -99,11 +104,6 @@ const CommandPanel = memo(
 					</Box>
 				</Box>
 			);
-		}
-
-		// Don't show panel if no commands found
-		if (commands.length === 0) {
-			return null;
 		}
 
 		return (

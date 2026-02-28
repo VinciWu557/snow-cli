@@ -12,6 +12,8 @@ import {
 	isFileDialogSupported,
 } from '../../utils/ui/fileDialog.js';
 import {exportMessagesToFile} from '../../utils/session/chatExporter.js';
+import {copyToClipboard} from '../../utils/core/clipboard.js';
+import {useI18n} from '../../i18n/index.js';
 
 /**
  * 执行上下文压缩
@@ -311,6 +313,7 @@ type CommandHandlerOptions = {
 
 export function useCommandHandler(options: CommandHandlerOptions) {
 	const {stdout} = useStdout();
+	const {t} = useI18n();
 
 	const handleCommandExecution = useCallback(
 		async (commandName: string, result: any) => {
@@ -537,14 +540,14 @@ export function useCommandHandler(options: CommandHandlerOptions) {
 				// Open profile switching panel (same logic as shortcut)
 				options.onSwitchProfile();
 				// Don't add command message to keep UI clean
-		} else if (result.success && result.action === 'home') {
-			// Clear session BEFORE navigating to prevent stale session leaking into new chat
-			sessionManager.clearCurrentSession();
-			options.clearSavedMessages();
-			// Reset terminal before navigating to welcome screen
-			resetTerminal(stdout);
-			navigateTo('welcome');
-		} else if (result.success && result.action === 'showUsagePanel') {
+			} else if (result.success && result.action === 'home') {
+				// Clear session BEFORE navigating to prevent stale session leaking into new chat
+				sessionManager.clearCurrentSession();
+				options.clearSavedMessages();
+				// Reset terminal before navigating to welcome screen
+				resetTerminal(stdout);
+				navigateTo('welcome');
+			} else if (result.success && result.action === 'showUsagePanel') {
 				options.setShowUsagePanel(true);
 				const commandMessage: Message = {
 					role: 'command',
@@ -693,7 +696,10 @@ export function useCommandHandler(options: CommandHandlerOptions) {
 					if (cmdOutputFlushTimer) {
 						clearTimeout(cmdOutputFlushTimer);
 					}
-					cmdOutputFlushTimer = setTimeout(flushCmdOutput, CMD_OUTPUT_FLUSH_DELAY);
+					cmdOutputFlushTimer = setTimeout(
+						flushCmdOutput,
+						CMD_OUTPUT_FLUSH_DELAY,
+					);
 				};
 
 				// Stream stdout
@@ -777,14 +783,14 @@ export function useCommandHandler(options: CommandHandlerOptions) {
 					};
 					options.setMessages(prev => [...prev, errorMessage]);
 				}
-		} else if (result.success && result.action === 'home') {
-			// Clear session BEFORE navigating to prevent stale session leaking into new chat
-			sessionManager.clearCurrentSession();
-			options.clearSavedMessages();
-			// Reset terminal before navigating to welcome screen
-			resetTerminal(stdout);
-			navigateTo('welcome');
-		} else if (result.success && result.action === 'toggleYolo') {
+			} else if (result.success && result.action === 'home') {
+				// Clear session BEFORE navigating to prevent stale session leaking into new chat
+				sessionManager.clearCurrentSession();
+				options.clearSavedMessages();
+				// Reset terminal before navigating to welcome screen
+				resetTerminal(stdout);
+				navigateTo('welcome');
+			} else if (result.success && result.action === 'toggleYolo') {
 				// Toggle YOLO mode without adding command message
 				options.setYoloMode(prev => !prev);
 				// Don't add command message to keep UI clean
@@ -938,6 +944,59 @@ export function useCommandHandler(options: CommandHandlerOptions) {
 						options.setMessages(prev => [...prev, errorMessage]);
 					}
 				}
+			} else if (result.success && result.action === 'copyLastMessage') {
+				try {
+					const messages = options.messages;
+					let lastAssistantMessage: Message | undefined;
+					for (let i = messages.length - 1; i >= 0; i--) {
+						const msg = messages[i];
+						if (msg && msg.role === 'assistant' && !msg.subAgentInternal) {
+							lastAssistantMessage = msg;
+							break;
+						}
+					}
+
+					if (!lastAssistantMessage) {
+						const errorMessage: Message = {
+							role: 'command',
+							content: t.commandPanel.copyLastFeedback.noAssistantMessage,
+							commandName: commandName,
+						};
+						options.setMessages(prev => [...prev, errorMessage]);
+						return;
+					}
+
+					const contentToCopy = lastAssistantMessage.content || '';
+					if (!contentToCopy) {
+						const errorMessage: Message = {
+							role: 'command',
+							content: t.commandPanel.copyLastFeedback.emptyAssistantMessage,
+							commandName: commandName,
+						};
+						options.setMessages(prev => [...prev, errorMessage]);
+						return;
+					}
+
+					await copyToClipboard(contentToCopy);
+
+					const successMessage: Message = {
+						role: 'command',
+						content: t.commandPanel.copyLastFeedback.copySuccess,
+						commandName: commandName,
+					};
+					options.setMessages(prev => [...prev, successMessage]);
+				} catch (error) {
+					const errorMsg =
+						error instanceof Error
+							? error.message
+							: t.commandPanel.copyLastFeedback.unknownError;
+					const errorMessage: Message = {
+						role: 'command',
+						content: `${t.commandPanel.copyLastFeedback.copyFailedPrefix}: ${errorMsg}`,
+						commandName: commandName,
+					};
+					options.setMessages(prev => [...prev, errorMessage]);
+				}
 			} else if (result.success && result.action === 'toggleCodebase') {
 				// Handle toggle codebase command
 				if (options.onToggleCodebase) {
@@ -965,7 +1024,7 @@ export function useCommandHandler(options: CommandHandlerOptions) {
 				options.setMessages(prev => [...prev, commandMessage]);
 			}
 		},
-		[stdout, options],
+		[stdout, options, t],
 	);
 
 	return {handleCommandExecution};

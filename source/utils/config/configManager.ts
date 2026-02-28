@@ -12,6 +12,7 @@ import {
 	loadConfig,
 	saveConfig,
 	DEFAULT_CONFIG,
+	DEFAULT_STREAM_IDLE_TIMEOUT_SEC,
 	type AppConfig,
 } from './apiConfig.js';
 import {codebaseReviewAgent} from '../../agents/codebaseReviewAgent.js';
@@ -147,6 +148,18 @@ function migrateLegacyConfig(): void {
 }
 
 /**
+ * 归一化 streamIdleTimeoutSec.
+ * 缺失或非法值统一回退默认值(180秒).
+ */
+function normalizeStreamIdleTimeoutSec(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+		return DEFAULT_STREAM_IDLE_TIMEOUT_SEC;
+	}
+
+	return value;
+}
+
+/**
  * Load a specific profile with deep merge of default config
  * This ensures new config fields (like browserPath) are preserved
  */
@@ -170,6 +183,9 @@ export function loadProfile(profileName: string): AppConfig | undefined {
 			snowcfg: {
 				...DEFAULT_CONFIG.snowcfg,
 				...(parsedConfig.snowcfg || {}),
+				streamIdleTimeoutSec: normalizeStreamIdleTimeoutSec(
+					parsedConfig.snowcfg?.streamIdleTimeoutSec,
+				),
 			},
 		};
 

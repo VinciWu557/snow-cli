@@ -8,6 +8,10 @@ import {
 	withRetryGenerator,
 	parseJsonWithFix,
 } from '../utils/core/retryUtils.js';
+import {
+	createIdleTimeoutGuard,
+	StreamIdleTimeoutError,
+} from '../utils/core/streamGuards.js';
 import type {
 	ChatMessage,
 	ChatCompletionTool,
@@ -291,23 +295,61 @@ export interface StreamChunk {
  */
 async function* parseSSEStream(
 	reader: ReadableStreamDefaultReader<Uint8Array>,
+	abortSignal?: AbortSignal,
+	idleTimeoutMs?: number,
 ): AsyncGenerator<any, void, unknown> {
 	const decoder = new TextDecoder();
 	let buffer = '';
+	let dataCount = 0; // 记录成功解析的数据块数量
+	let lastEventType = ''; // 记录最后一个事件类型
+
+	// 创建空闲超时保护器
+	const guard = createIdleTimeoutGuard({
+		reader,
+		idleTimeoutMs,
+		onTimeout: () => {
+			throw new StreamIdleTimeoutError(
+				`No data received for ${idleTimeoutMs}ms`,
+				idleTimeoutMs,
+			);
+		},
+	});
 
 	try {
 		while (true) {
+			// 用户主动中断时立即标记丢弃,避免延迟消息外泄
+			if (abortSignal?.aborted) {
+				guard.abandon();
+				return;
+			}
+
 			const {done, value} = await reader.read();
 
+			// 检查是否有超时错误需要在读取循环中抛出(确保被正确的 try/catch 捕获)
+			const timeoutError = guard.getTimeoutError();
+			if (timeoutError) {
+				throw timeoutError;
+			}
+
+			// 检查是否已被丢弃(竞态条件防护)
+			if (guard.isAbandoned()) {
+				continue;
+			}
+
 			if (done) {
-				// ✅ 关键修复：检查buffer是否有残留数据
+				// 连接异常中断时,残留半包不应被静默丢弃,应抛出可重试错误
 				if (buffer.trim()) {
-					// 连接异常中断，抛出明确错误
+					// 连接异常中断,抛出明确错误,包含更详细的断点信息
+					const errorContext = {
+						dataCount,
+						lastEventType,
+						bufferLength: buffer.length,
+						bufferPreview: buffer.substring(0, 200),
+					};
+
+					const errorMessage = `[API_ERROR] [RETRIABLE] OpenAI stream terminated unexpectedly with incomplete data`;
 					throw new Error(
-						`Stream terminated unexpectedly with incomplete data: ${buffer.substring(
-							0,
-							100,
-						)}...`,
+						`${errorMessage}. Context: ${JSON.stringify(errorContext)}`,
 					);
 				}
 				break; // 正常结束
@@ -327,7 +369,10 @@ async function* parseSSEStream(
 
 				// Handle both "event: " and "event:" formats
 				if (trimmed.startsWith('event:')) {
-					// Event type, will be followed by data
+					// 记录事件类型用于断点恢复
+					lastEventType = trimmed.startsWith('event: ')
+						? trimmed.slice(7)
+						: trimmed.slice(6);
 					continue;
 				}
 
@@ -343,18 +388,46 @@ async function* parseSSEStream(
 					});
 
 					if (parseResult.success) {
-						yield parseResult.data;
+						const chunk = parseResult.data;
+						const hasBusinessDelta = !!chunk?.choices?.some((choice: any) => {
+							const delta = choice?.delta;
+							return Boolean(
+								delta?.content ||
+									delta?.reasoning_content ||
+									(delta?.tool_calls && delta.tool_calls.length > 0),
+							);
+						});
+						if (hasBusinessDelta) {
+							guard.touch();
+						}
+						dataCount++;
+						// yield 前检查是否已被丢弃(竞态条件防护)
+						if (!guard.isAbandoned()) {
+							yield chunk;
+						}
 					}
 				}
 			}
 		}
 	} catch (error) {
 		const {logger} = await import('../utils/core/logger.js');
-		logger.error('SSE stream parsing error:', {
+
+		// 增强错误日志,包含断点状态
+		const errorContext = {
 			error: error instanceof Error ? error.message : 'Unknown error',
-			remainingBuffer: buffer.substring(0, 200),
-		});
+			dataCount,
+			lastEventType,
+			bufferLength: buffer.length,
+			bufferPreview: buffer.substring(0, 200),
+		};
+		logger.error(
+			'[API_ERROR] [RETRIABLE] OpenAI SSE stream parsing error with checkpoint context:',
+			errorContext,
+		);
 		throw error;
+	} finally {
+		// 清理 idle timeout 定时器
+		guard.dispose();
 	}
 }
 
@@ -490,10 +563,13 @@ export async function* createStreamingChatCompletion(
 			let usageData: UsageInfo | undefined;
 			let reasoningStarted = false; // Track if reasoning has started
 			let reasoningContentBuffer = ''; // Accumulate complete reasoning content for saving
-			for await (const chunk of parseSSEStream(response.body.getReader())) {
-				if (abortSignal?.aborted) {
-					return;
-				}
+			const idleTimeoutMs = (config.streamIdleTimeoutSec ?? 180) * 1000;
+			for await (const chunk of parseSSEStream(
+				response.body.getReader(),
+				abortSignal,
+				idleTimeoutMs,
+			)) {
+				// abort 由 parseSSEStream 统一处理,避免重复分支导致行为漂移
 
 				// Capture usage information if available (usually in the last chunk)
 				const usageValue = (chunk as any).usage;
@@ -508,8 +584,14 @@ export async function* createStreamingChatCompletion(
 				}
 
 				// Skip content processing if no choices (but usage is already captured above)
-				const choice = chunk.choices[0];
+				const choice = chunk.choices?.[0];
 				if (!choice) {
+					// If this chunk has usage but no choices, it's the final usage-only chunk
+					// Some APIs send this as the last chunk after finish_reason
+					if ((chunk as any).usage) {
+						// Final chunk with usage, exit the loop
+						break;
+					}
 					continue;
 				}
 
@@ -587,7 +669,10 @@ export async function* createStreamingChatCompletion(
 				}
 
 				if (choice.finish_reason) {
-					break;
+					// Continue to wait for the final usage chunk.
+					// Some APIs send finish_reason first, then usage-only chunk.
+					// Don't break immediately as some APIs stream usage in each chunk.
+					continue;
 				}
 			}
 

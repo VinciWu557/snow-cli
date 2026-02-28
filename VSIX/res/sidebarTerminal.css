@@ -1,0 +1,58 @@
+:root {
+	--terminal-bg: #181818;
+	--terminal-drag-outline: #007acc;
+	--terminal-error: #f14c4c;
+	--terminal-border: var(--vscode-panel-border, rgba(255, 255, 255, 0.12));
+}
+
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+html,
+body,
+#terminal-container,
+.xterm {
+	height: 100%;
+	width: 100%;
+}
+
+html,
+body {
+	overflow: hidden;
+	background-color: var(--terminal-bg);
+}
+
+#terminal-container.drag-over {
+	outline: 2px dashed var(--terminal-drag-outline);
+	outline-offset: -2px;
+}
+
+#terminal-container.terminal-error {
+	color: var(--terminal-error);
+	padding: 20px;
+	font-family: monospace;
+	font-size: 12px;
+	white-space: pre-wrap;
+}
+
+.xterm .xterm-viewport,
+.xterm .xterm-scrollable-element {
+	background-color: var(--terminal-bg) !important;
+}
+
+.xterm .xterm-scrollable-element {
+	height: 100%;
+}
+
+.xterm .xterm-scrollable-element > .scrollbar.vertical {
+	box-sizing: border-box;
+	border-left: 1px solid var(--terminal-border);
+}
+
+.xterm .xterm-scrollable-element > .scrollbar.horizontal {
+	box-sizing: border-box;
+	border-top: 1px solid var(--terminal-border);
+}

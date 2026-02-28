@@ -12,6 +12,12 @@ export function useCommandPanel(buffer: TextBuffer, isProcessing = false) {
 		() => [
 			{name: 'help', description: t.commandPanel.commands.help},
 			{name: 'clear', description: t.commandPanel.commands.clear},
+			{
+				name: 'copy-last',
+				description:
+					t.commandPanel.commands.copyLast ||
+					'Copy last AI message to clipboard',
+			},
 			{name: 'resume', description: t.commandPanel.commands.resume},
 			{name: 'mcp', description: t.commandPanel.commands.mcp},
 			{name: 'yolo', description: t.commandPanel.commands.yolo},
@@ -113,7 +119,9 @@ export function useCommandPanel(buffer: TextBuffer, isProcessing = false) {
 			},
 			{
 				name: 'diff',
-				description: t.commandPanel.commands.diff || 'Review file changes from a conversation in IDE diff view',
+				description:
+					t.commandPanel.commands.diff ||
+					'Review file changes from a conversation in IDE diff view',
 			},
 			{
 				name: 'quit',

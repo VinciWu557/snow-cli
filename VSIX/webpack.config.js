@@ -15,7 +15,9 @@ const config = {
 	},
 	externals: {
 		vscode: 'commonjs vscode',
-		'node-pty': 'commonjs node-pty'
+		'node-pty': 'commonjs node-pty',
+		bufferutil: 'commonjs bufferutil',
+		'utf-8-validate': 'commonjs utf-8-validate'
 	},
 	resolve: {
 		extensions: ['.ts', '.js']

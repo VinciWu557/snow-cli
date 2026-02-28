@@ -2,7 +2,7 @@
 	"name": "snow-cli",
 	"displayName": "Snow CLI",
 	"description": "Snow AI CLI with ACE Code Search - Intelligent code navigation and search powered by AI",
-	"version": "0.4.8",
+	"version": "0.4.11",
 	"publisher": "mufasa",
 	"repository": {
 		"type": "git",
@@ -35,63 +35,63 @@
 					],
 					"description": "Choose the terminal display mode. 'sidebar' embeds a terminal in the sidebar panel; 'split' opens a terminal in a right-side editor split."
 				},
-			"snow-cli.startupCommand": {
-				"type": "string",
-				"default": "snow",
-				"description": "The command to run when the terminal starts."
-			},
-			"snow-cli.terminal.shellType": {
-				"type": "string",
-				"default": "auto",
-				"enum": [
-					"auto",
-					"powershell",
-					"cmd"
-				],
-				"enumDescriptions": [
-					"Auto-detect: prefer pwsh (PowerShell 7+), fallback to powershell.exe (Windows only)",
-					"PowerShell (pwsh or powershell.exe, auto-detected version)",
-					"Command Prompt (cmd.exe, Windows only)"
-				],
-				"description": "Shell type for the sidebar terminal (Windows only). On macOS/Linux the default login shell is always used."
-			},
-			"snow-cli.terminal.fontFamily": {
-				"type": "string",
-				"default": "",
-				"description": "Font family for the sidebar terminal. Leave empty to use the default monospace font."
-			},
-			"snow-cli.terminal.fontSize": {
-				"type": "number",
-				"default": 14,
-				"minimum": 8,
-				"maximum": 32,
-				"description": "Font size (px) for the sidebar terminal."
-			},
-			"snow-cli.terminal.fontWeight": {
-				"type": "string",
-				"default": "normal",
-				"enum": [
-					"normal",
-					"bold",
-					"100",
-					"200",
-					"300",
-					"400",
-					"500",
-					"600",
-					"700",
-					"800",
-					"900"
-				],
-				"description": "Font weight for the sidebar terminal."
-			},
-			"snow-cli.terminal.lineHeight": {
-				"type": "number",
-				"default": 1.0,
-				"minimum": 0.8,
-				"maximum": 2.0,
-				"description": "Line height for the sidebar terminal."
-			}
+				"snow-cli.startupCommand": {
+					"type": "string",
+					"default": "snow",
+					"description": "The command to run when the terminal starts."
+				},
+				"snow-cli.terminal.shellType": {
+					"type": "string",
+					"default": "auto",
+					"enum": [
+						"auto",
+						"powershell",
+						"cmd"
+					],
+					"enumDescriptions": [
+						"Auto-detect: prefer pwsh (PowerShell 7+), fallback to powershell.exe (Windows only)",
+						"PowerShell (pwsh or powershell.exe, auto-detected version)",
+						"Command Prompt (cmd.exe, Windows only)"
+					],
+					"description": "Shell type for the sidebar terminal (Windows only). On macOS/Linux the default login shell is always used."
+				},
+				"snow-cli.terminal.fontFamily": {
+					"type": "string",
+					"default": "",
+					"description": "Font family for the sidebar terminal. Leave empty to use the default monospace font."
+				},
+				"snow-cli.terminal.fontSize": {
+					"type": "number",
+					"default": 14,
+					"minimum": 8,
+					"maximum": 32,
+					"description": "Font size (px) for the sidebar terminal."
+				},
+				"snow-cli.terminal.fontWeight": {
+					"type": "string",
+					"default": "normal",
+					"enum": [
+						"normal",
+						"bold",
+						"100",
+						"200",
+						"300",
+						"400",
+						"500",
+						"600",
+						"700",
+						"800",
+						"900"
+					],
+					"description": "Font weight for the sidebar terminal."
+				},
+				"snow-cli.terminal.lineHeight": {
+					"type": "number",
+					"default": 1,
+					"minimum": 0.8,
+					"maximum": 2,
+					"description": "Line height for the sidebar terminal."
+				}
 			}
 		},
 		"viewsContainers": {
@@ -128,6 +128,16 @@
 				"icon": "$(debug-rerun)"
 			},
 			{
+				"command": "snow-cli.addFolderPath",
+				"title": "Add Folder Path",
+				"icon": "$(file-symlink-directory)"
+			},
+			{
+				"command": "snow-cli.addFilePath",
+				"title": "Add File Path",
+				"icon": "$(file-symlink-file)"
+			},
+			{
 				"command": "snow-cli.openSnowSettings",
 				"title": "Snow CLI Settings",
 				"icon": "$(settings-gear)"
@@ -135,6 +145,18 @@
 			{
 				"command": "snow-cli.focusSidebar",
 				"title": "Focus Snow CLI Sidebar"
+			},
+			{
+				"command": "snow-cli.sendFilePaths",
+				"title": "Send to Snow CLI",
+				"icon": "$(file-symlink-file)"
+			}
+		],
+		"submenus": [
+			{
+				"id": "snow-cli.insertPathActions",
+				"label": "Insert Path",
+				"icon": "$(attach)"
 			}
 		],
 		"keybindings": [
@@ -161,6 +183,34 @@
 					"command": "snow-cli.openSnowSettings",
 					"when": "view == snowCliTerminal && snow-cli.sidebarMode",
 					"group": "navigation@2"
+				},
+				{
+					"submenu": "snow-cli.insertPathActions",
+					"when": "view == snowCliTerminal && snow-cli.sidebarMode",
+					"group": "navigation@3"
+				}
+			],
+			"snow-cli.insertPathActions": [
+				{
+					"command": "snow-cli.addFolderPath",
+					"group": "navigation@1"
+				},
+				{
+					"command": "snow-cli.addFilePath",
+					"group": "navigation@2"
+				}
+			],
+			"explorer/context": [
+				{
+					"command": "snow-cli.sendFilePaths",
+					"group": "snow@1"
+				}
+			],
+			"editor/title/context": [
+				{
+					"command": "snow-cli.sendFilePaths",
+					"when": "resourceScheme == file || resourceScheme == vscode-remote",
+					"group": "snow@1"
 				}
 			]
 		}

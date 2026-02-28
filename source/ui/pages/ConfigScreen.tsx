@@ -48,7 +48,9 @@ type ConfigField =
 	| 'enableAutoCompress'
 	| 'showThinking'
 	| 'thinkingEnabled'
+	| 'thinkingMode'
 	| 'thinkingBudgetTokens'
+	| 'thinkingEffort'
 	| 'geminiThinkingEnabled'
 	| 'geminiThinkingBudget'
 	| 'responsesReasoningEnabled'
@@ -57,6 +59,7 @@ type ConfigField =
 	| 'basicModel'
 	| 'maxContextTokens'
 	| 'maxTokens'
+	| 'streamIdleTimeoutSec'
 	| 'toolResultTokenLimit'
 	| 'editSimilarityThreshold';
 
@@ -148,7 +151,13 @@ export default function ConfigScreen({
 	const [enableAutoCompress, setEnableAutoCompress] = useState(true);
 	const [showThinking, setShowThinking] = useState(true);
 	const [thinkingEnabled, setThinkingEnabled] = useState(false);
+	const [thinkingMode, setThinkingMode] = useState<'tokens' | 'adaptive'>(
+		'tokens',
+	);
 	const [thinkingBudgetTokens, setThinkingBudgetTokens] = useState(10000);
+	const [thinkingEffort, setThinkingEffort] = useState<
+		'low' | 'medium' | 'high' | 'max'
+	>('high');
 	const [geminiThinkingEnabled, setGeminiThinkingEnabled] = useState(false);
 	const [geminiThinkingBudget, setGeminiThinkingBudget] = useState(1024);
 	const [responsesReasoningEnabled, setResponsesReasoningEnabled] =
@@ -162,6 +171,7 @@ export default function ConfigScreen({
 	const [basicModel, setBasicModel] = useState('');
 	const [maxContextTokens, setMaxContextTokens] = useState(4000);
 	const [maxTokens, setMaxTokens] = useState(4096);
+	const [streamIdleTimeoutSec, setStreamIdleTimeoutSec] = useState(180);
 	const [toolResultTokenLimit, setToolResultTokenLimit] = useState(100000);
 	const [editSimilarityThreshold, setEditSimilarityThreshold] = useState(0.75);
 
@@ -219,7 +229,13 @@ export default function ConfigScreen({
 						'anthropicBeta' as ConfigField,
 						'anthropicCacheTTL' as ConfigField,
 						'thinkingEnabled' as ConfigField,
-						'thinkingBudgetTokens' as ConfigField,
+						'thinkingMode' as ConfigField,
+						...(thinkingEnabled && thinkingMode === 'tokens'
+							? ['thinkingBudgetTokens' as ConfigField]
+							: []),
+						...(thinkingEnabled && thinkingMode === 'adaptive'
+							? ['thinkingEffort' as ConfigField]
+							: []),
 				  ]
 				: requestMethod === 'gemini'
 				? [
@@ -236,6 +252,7 @@ export default function ConfigScreen({
 			'basicModel',
 			'maxContextTokens',
 			'maxTokens',
+			'streamIdleTimeoutSec',
 			'toolResultTokenLimit',
 			'editSimilarityThreshold',
 		];
@@ -342,8 +359,16 @@ export default function ConfigScreen({
 		setAnthropicCacheTTL(config.anthropicCacheTTL || '5m');
 		setEnableAutoCompress(config.enableAutoCompress !== false); // Default to true
 		setShowThinking(config.showThinking !== false); // Default to true
-		setThinkingEnabled(config.thinking?.type === 'enabled' || false);
+		setThinkingEnabled(
+			config.thinking?.type === 'enabled' ||
+				config.thinking?.type === 'adaptive' ||
+				false,
+		);
+		setThinkingMode(
+			config.thinking?.type === 'adaptive' ? 'adaptive' : 'tokens',
+		);
 		setThinkingBudgetTokens(config.thinking?.budget_tokens || 10000);
+		setThinkingEffort(config.thinking?.effort || 'high');
 		setGeminiThinkingEnabled(config.geminiThinking?.enabled || false);
 		setGeminiThinkingBudget(config.geminiThinking?.budget || 1024);
 		setResponsesReasoningEnabled(config.responsesReasoning?.enabled || false);
@@ -352,6 +377,7 @@ export default function ConfigScreen({
 		setBasicModel(config.basicModel || '');
 		setMaxContextTokens(config.maxContextTokens || 4000);
 		setMaxTokens(config.maxTokens || 4096);
+		setStreamIdleTimeoutSec(config.streamIdleTimeoutSec || 180);
 		setToolResultTokenLimit(config.toolResultTokenLimit || 100000);
 		setEditSimilarityThreshold(config.editSimilarityThreshold ?? 0.75);
 
@@ -416,12 +442,16 @@ export default function ConfigScreen({
 		if (currentField === 'basicModel') return basicModel;
 		if (currentField === 'maxContextTokens') return maxContextTokens.toString();
 		if (currentField === 'maxTokens') return maxTokens.toString();
+		if (currentField === 'streamIdleTimeoutSec')
+			return streamIdleTimeoutSec.toString();
 		if (currentField === 'toolResultTokenLimit')
 			return toolResultTokenLimit.toString();
 		if (currentField === 'editSimilarityThreshold')
 			return editSimilarityThreshold.toString();
 		if (currentField === 'thinkingBudgetTokens')
 			return thinkingBudgetTokens.toString();
+		if (currentField === 'thinkingMode') return thinkingMode;
+		if (currentField === 'thinkingEffort') return thinkingEffort;
 		if (currentField === 'geminiThinkingBudget')
 			return geminiThinkingBudget.toString();
 		if (currentField === 'responsesReasoningEffort')
@@ -581,12 +611,15 @@ export default function ConfigScreen({
 					enableAutoCompress,
 					showThinking,
 					thinking: thinkingEnabled
-						? {type: 'enabled' as const, budget_tokens: thinkingBudgetTokens}
+						? thinkingMode === 'adaptive'
+							? {type: 'adaptive' as const, effort: thinkingEffort}
+							: {type: 'enabled' as const, budget_tokens: thinkingBudgetTokens}
 						: undefined,
 					advancedModel,
 					basicModel,
 					maxContextTokens,
 					maxTokens,
+					streamIdleTimeoutSec,
 					toolResultTokenLimit,
 				},
 			};
@@ -680,16 +713,23 @@ export default function ConfigScreen({
 				basicModel,
 				maxContextTokens,
 				maxTokens,
+				streamIdleTimeoutSec,
 				toolResultTokenLimit,
 				editSimilarityThreshold,
 			};
 
 			// Save thinking configuration (always save to preserve settings)
 			if (thinkingEnabled) {
-				config.thinking = {
-					type: 'enabled',
-					budget_tokens: thinkingBudgetTokens,
-				};
+				config.thinking =
+					thinkingMode === 'adaptive'
+						? {
+								type: 'adaptive',
+								effort: thinkingEffort,
+						  }
+						: {
+								type: 'enabled',
+								budget_tokens: thinkingBudgetTokens,
+						  };
 			} else {
 				// Explicitly set to undefined to clear it when disabled
 				config.thinking = undefined;
@@ -728,7 +768,12 @@ export default function ConfigScreen({
 						enableAutoCompress,
 						showThinking,
 						thinking: thinkingEnabled
-							? {type: 'enabled' as const, budget_tokens: thinkingBudgetTokens}
+							? thinkingMode === 'adaptive'
+								? {type: 'adaptive' as const, effort: thinkingEffort}
+								: {
+										type: 'enabled' as const,
+										budget_tokens: thinkingBudgetTokens,
+								  }
 							: undefined,
 						geminiThinking: geminiThinkingEnabled
 							? {enabled: true, budget: geminiThinkingBudget}
@@ -741,6 +786,7 @@ export default function ConfigScreen({
 						basicModel,
 						maxContextTokens,
 						maxTokens,
+						streamIdleTimeoutSec,
 						toolResultTokenLimit,
 						editSimilarityThreshold,
 					},
@@ -875,26 +921,17 @@ export default function ConfigScreen({
 				let display = t.configScreen.followGlobalNone;
 				if (systemPromptId === '') {
 					display = t.configScreen.notUse;
-				} else if (
-					Array.isArray(systemPromptId) &&
-					systemPromptId.length > 0
-				) {
+				} else if (Array.isArray(systemPromptId) && systemPromptId.length > 0) {
 					display = systemPromptId
 						.map(id => getSystemPromptNameById(id))
 						.join(', ');
-				} else if (
-					systemPromptId &&
-					typeof systemPromptId === 'string'
-				) {
+				} else if (systemPromptId && typeof systemPromptId === 'string') {
 					display = getSystemPromptNameById(systemPromptId);
 				} else if (activeSystemPromptIds.length > 0) {
 					const activeNames = activeSystemPromptIds
 						.map(id => getSystemPromptNameById(id))
 						.join(', ');
-					display = t.configScreen.followGlobal.replace(
-						'{name}',
-						activeNames,
-					);
+					display = t.configScreen.followGlobal.replace('{name}', activeNames);
 				}
 				return (
 					<Box key={field} flexDirection="column">
@@ -1077,7 +1114,29 @@ export default function ConfigScreen({
 					</Box>
 				);
 
+			case 'thinkingMode':
+				return (
+					<Box key={field} flexDirection="column">
+						<Text
+							color={
+								isActive ? theme.colors.menuSelected : theme.colors.menuNormal
+							}
+						>
+							{isActive ? '❯ ' : '  '}
+							{t.configScreen.thinkingMode}
+						</Text>
+						<Box marginLeft={3}>
+							<Text color={theme.colors.menuSecondary}>
+								{thinkingMode === 'tokens'
+									? t.configScreen.thinkingModeTokens
+									: t.configScreen.thinkingModeAdaptive}
+							</Text>
+						</Box>
+					</Box>
+				);
+
 			case 'thinkingBudgetTokens':
+				if (thinkingMode !== 'tokens') return null;
 				return (
 					<Box key={field} flexDirection="column">
 						<Text
@@ -1102,6 +1161,24 @@ export default function ConfigScreen({
 								</Text>
 							</Box>
 						)}
+					</Box>
+				);
+
+			case 'thinkingEffort':
+				if (thinkingMode !== 'adaptive') return null;
+				return (
+					<Box key={field} flexDirection="column">
+						<Text
+							color={
+								isActive ? theme.colors.menuSelected : theme.colors.menuNormal
+							}
+						>
+							{isActive ? '❯ ' : '  '}
+							{t.configScreen.thinkingEffort}
+						</Text>
+						<Box marginLeft={3}>
+							<Text color={theme.colors.menuSecondary}>{thinkingEffort}</Text>
+						</Box>
 					</Box>
 				);
 
@@ -1314,6 +1391,34 @@ export default function ConfigScreen({
 					</Box>
 				);
 
+			case 'streamIdleTimeoutSec':
+				return (
+					<Box key={field} flexDirection="column">
+						<Text
+							color={
+								isActive ? theme.colors.menuSelected : theme.colors.menuNormal
+							}
+						>
+							{isActive ? '❯ ' : '  '}
+							{t.configScreen.streamIdleTimeoutSec}
+						</Text>
+						{isCurrentlyEditing && (
+							<Box marginLeft={3}>
+								<Text color={theme.colors.menuInfo}>
+									{t.configScreen.enterValue} {streamIdleTimeoutSec}
+								</Text>
+							</Box>
+						)}
+						{!isCurrentlyEditing && (
+							<Box marginLeft={3}>
+								<Text color={theme.colors.menuSecondary}>
+									{streamIdleTimeoutSec}
+								</Text>
+							</Box>
+						)}
+					</Box>
+				);
+
 			case 'toolResultTokenLimit':
 				return (
 					<Box key={field} flexDirection="column">
@@ -1489,6 +1594,8 @@ export default function ConfigScreen({
 				currentField === 'anthropicCacheTTL' ||
 				currentField === 'advancedModel' ||
 				currentField === 'basicModel' ||
+				currentField === 'thinkingMode' ||
+				currentField === 'thinkingEffort' ||
 				currentField === 'responsesReasoningEffort') &&
 			key.escape
 		) {
@@ -1516,6 +1623,7 @@ export default function ConfigScreen({
 			if (
 				currentField === 'maxContextTokens' ||
 				currentField === 'maxTokens' ||
+				currentField === 'streamIdleTimeoutSec' ||
 				currentField === 'toolResultTokenLimit' ||
 				currentField === 'thinkingBudgetTokens' ||
 				currentField === 'geminiThinkingBudget' ||
@@ -1567,6 +1675,8 @@ export default function ConfigScreen({
 							? maxContextTokens
 							: currentField === 'maxTokens'
 							? maxTokens
+							: currentField === 'streamIdleTimeoutSec'
+							? streamIdleTimeoutSec
 							: currentField === 'toolResultTokenLimit'
 							? toolResultTokenLimit
 							: currentField === 'thinkingBudgetTokens'
@@ -1578,6 +1688,8 @@ export default function ConfigScreen({
 							setMaxContextTokens(newValue);
 						} else if (currentField === 'maxTokens') {
 							setMaxTokens(newValue);
+						} else if (currentField === 'streamIdleTimeoutSec') {
+							setStreamIdleTimeoutSec(newValue);
 						} else if (currentField === 'toolResultTokenLimit') {
 							setToolResultTokenLimit(newValue);
 						} else if (currentField === 'thinkingBudgetTokens') {
@@ -1592,6 +1704,8 @@ export default function ConfigScreen({
 							? maxContextTokens
 							: currentField === 'maxTokens'
 							? maxTokens
+							: currentField === 'streamIdleTimeoutSec'
+							? streamIdleTimeoutSec
 							: currentField === 'toolResultTokenLimit'
 							? toolResultTokenLimit
 							: currentField === 'thinkingBudgetTokens'
@@ -1604,6 +1718,8 @@ export default function ConfigScreen({
 						setMaxContextTokens(!isNaN(newValue) ? newValue : 0);
 					} else if (currentField === 'maxTokens') {
 						setMaxTokens(!isNaN(newValue) ? newValue : 0);
+					} else if (currentField === 'streamIdleTimeoutSec') {
+						setStreamIdleTimeoutSec(!isNaN(newValue) ? newValue : 0);
 					} else if (currentField === 'toolResultTokenLimit') {
 						setToolResultTokenLimit(!isNaN(newValue) ? newValue : 0);
 					} else if (currentField === 'thinkingBudgetTokens') {
@@ -1617,6 +1733,8 @@ export default function ConfigScreen({
 							? 4000
 							: currentField === 'maxTokens'
 							? 100
+							: currentField === 'streamIdleTimeoutSec'
+							? 1
 							: currentField === 'toolResultTokenLimit'
 							? 1000
 							: currentField === 'thinkingBudgetTokens'
@@ -1627,6 +1745,8 @@ export default function ConfigScreen({
 							? maxContextTokens
 							: currentField === 'maxTokens'
 							? maxTokens
+							: currentField === 'streamIdleTimeoutSec'
+							? streamIdleTimeoutSec
 							: currentField === 'toolResultTokenLimit'
 							? toolResultTokenLimit
 							: currentField === 'thinkingBudgetTokens'
@@ -1637,6 +1757,8 @@ export default function ConfigScreen({
 						setMaxContextTokens(finalValue);
 					} else if (currentField === 'maxTokens') {
 						setMaxTokens(finalValue);
+					} else if (currentField === 'streamIdleTimeoutSec') {
+						setStreamIdleTimeoutSec(finalValue);
 					} else if (currentField === 'toolResultTokenLimit') {
 						setToolResultTokenLimit(finalValue);
 					} else if (currentField === 'thinkingBudgetTokens') {
@@ -1682,6 +1804,10 @@ export default function ConfigScreen({
 					setShowThinking(!showThinking);
 				} else if (currentField === 'thinkingEnabled') {
 					setThinkingEnabled(!thinkingEnabled);
+				} else if (currentField === 'thinkingMode') {
+					setIsEditing(true);
+				} else if (currentField === 'thinkingEffort') {
+					setIsEditing(true);
 				} else if (currentField === 'geminiThinkingEnabled') {
 					setGeminiThinkingEnabled(!geminiThinkingEnabled);
 				} else if (currentField === 'responsesReasoningEnabled') {
@@ -1689,6 +1815,7 @@ export default function ConfigScreen({
 				} else if (
 					currentField === 'maxContextTokens' ||
 					currentField === 'maxTokens' ||
+					currentField === 'streamIdleTimeoutSec' ||
 					currentField === 'toolResultTokenLimit' ||
 					currentField === 'thinkingBudgetTokens' ||
 					currentField === 'geminiThinkingBudget'
@@ -1719,10 +1846,7 @@ export default function ConfigScreen({
 					if (currentField === 'systemPromptId') {
 						if (Array.isArray(systemPromptId)) {
 							setPendingPromptIds(new Set(systemPromptId));
-						} else if (
-							systemPromptId &&
-							systemPromptId !== ''
-						) {
+						} else if (systemPromptId && systemPromptId !== '') {
 							setPendingPromptIds(new Set([systemPromptId]));
 						} else {
 							setPendingPromptIds(new Set());
@@ -2006,6 +2130,8 @@ export default function ConfigScreen({
 				currentField === 'customHeadersSchemeId' ||
 				currentField === 'advancedModel' ||
 				currentField === 'basicModel' ||
+				currentField === 'thinkingMode' ||
+				currentField === 'thinkingEffort' ||
 				currentField === 'responsesReasoningEffort') ? (
 				<Box flexDirection="column">
 					<Text color={theme.colors.menuSelected}>
@@ -2018,6 +2144,10 @@ export default function ConfigScreen({
 							t.configScreen.advancedModel.replace(':', '')}
 						{currentField === 'basicModel' &&
 							t.configScreen.basicModel.replace(':', '')}
+						{currentField === 'thinkingMode' &&
+							t.configScreen.thinkingMode.replace(':', '')}
+						{currentField === 'thinkingEffort' &&
+							t.configScreen.thinkingEffort.replace(':', '')}
 						{currentField === 'responsesReasoningEffort' &&
 							t.configScreen.responsesReasoningEffort.replace(':', '')}
 						{currentField === 'systemPromptId' && t.configScreen.systemPrompt}
@@ -2136,21 +2266,13 @@ export default function ConfigScreen({
 											limit={10}
 											initialIndex={Math.max(
 												0,
-												items.findIndex(
-													opt => opt.value === selected,
-												),
+												items.findIndex(opt => opt.value === selected),
 											)}
 											isFocused={true}
 											selectedValues={pendingPromptIds}
-											renderItem={({
-												label,
-												value,
-												isSelected,
-												isMarked,
-											}) => {
+											renderItem={({label, value, isSelected, isMarked}) => {
 												const isMeta =
-													value === '__FOLLOW__' ||
-													value === '__DISABLED__';
+													value === '__FOLLOW__' || value === '__DISABLED__';
 												return (
 													<Text
 														color={
@@ -2161,11 +2283,7 @@ export default function ConfigScreen({
 																: 'white'
 														}
 													>
-														{isMeta
-															? ''
-															: isMarked
-															? '[✓] '
-															: '[ ] '}
+														{isMeta ? '' : isMarked ? '[✓] ' : '[ ] '}
 														{label}
 													</Text>
 												);
@@ -2175,9 +2293,7 @@ export default function ConfigScreen({
 													item.value === '__FOLLOW__' ||
 													item.value === '__DISABLED__'
 												) {
-													applySystemPromptSelectValue(
-														item.value,
-													);
+													applySystemPromptSelectValue(item.value);
 													setPendingPromptIds(new Set());
 													setIsEditing(false);
 													return;
@@ -2197,9 +2313,7 @@ export default function ConfigScreen({
 													item.value === '__FOLLOW__' ||
 													item.value === '__DISABLED__'
 												) {
-													applySystemPromptSelectValue(
-														item.value,
-													);
+													applySystemPromptSelectValue(item.value);
 													setPendingPromptIds(new Set());
 													setIsEditing(false);
 													return;
@@ -2216,21 +2330,15 @@ export default function ConfigScreen({
 													finalIds.push(item.value);
 												}
 												setSystemPromptId(
-													finalIds.length === 1
-														? finalIds[0]!
-														: finalIds,
+													finalIds.length === 1 ? finalIds[0]! : finalIds,
 												);
 												setPendingPromptIds(new Set());
 												setIsEditing(false);
 											}}
 										/>
 										<Box marginTop={1}>
-											<Text
-												color={theme.colors.menuSecondary}
-												dimColor
-											>
-												{t.configScreen
-													.systemPromptMultiSelectHint ||
+											<Text color={theme.colors.menuSecondary} dimColor>
+												{t.configScreen.systemPromptMultiSelectHint ||
 													'Space: toggle | Enter: confirm | Esc: cancel'}
 											</Text>
 										</Box>
@@ -2281,6 +2389,49 @@ export default function ConfigScreen({
 									}}
 								/>
 							</Box>
+						)}
+						{currentField === 'thinkingMode' && (
+							<ScrollableSelectInput
+								items={[
+									{label: t.configScreen.thinkingModeTokens, value: 'tokens'},
+									{
+										label: t.configScreen.thinkingModeAdaptive,
+										value: 'adaptive',
+									},
+								]}
+								initialIndex={thinkingMode === 'tokens' ? 0 : 1}
+								isFocused={true}
+								onSelect={item => {
+									setThinkingMode(item.value as 'tokens' | 'adaptive');
+									setIsEditing(false);
+								}}
+							/>
+						)}
+						{currentField === 'thinkingEffort' && (
+							<ScrollableSelectInput
+								items={[
+									{label: 'low', value: 'low'},
+									{label: 'medium', value: 'medium'},
+									{label: 'high', value: 'high'},
+									{label: 'max', value: 'max'},
+								]}
+								initialIndex={
+									thinkingEffort === 'low'
+										? 0
+										: thinkingEffort === 'medium'
+										? 1
+										: thinkingEffort === 'high'
+										? 2
+										: 3
+								}
+								isFocused={true}
+								onSelect={item => {
+									setThinkingEffort(
+										item.value as 'low' | 'medium' | 'high' | 'max',
+									);
+									setIsEditing(false);
+								}}
+							/>
 						)}
 						{currentField === 'responsesReasoningEffort' && (
 							<ScrollableSelectInput
@@ -2336,7 +2487,7 @@ export default function ConfigScreen({
 			)}
 
 			{/* Only show navigation hints when not in Select editing mode */}
-			{!(
+			{!!!(
 				isEditing &&
 				(currentField === 'profile' ||
 					currentField === 'requestMethod' ||
@@ -2344,6 +2495,8 @@ export default function ConfigScreen({
 					currentField === 'customHeadersSchemeId' ||
 					currentField === 'advancedModel' ||
 					currentField === 'basicModel' ||
+					currentField === 'thinkingMode' ||
+					currentField === 'thinkingEffort' ||
 					currentField === 'responsesReasoningEffort')
 			) && (
 				<Box flexDirection="column" marginTop={1}>

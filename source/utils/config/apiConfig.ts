@@ -9,10 +9,10 @@ import {
 } from 'fs';
 
 export type RequestMethod = 'chat' | 'responses' | 'gemini' | 'anthropic';
-
 export interface ThinkingConfig {
-	type: 'enabled';
-	budget_tokens: number;
+	type: 'enabled' | 'adaptive';
+	budget_tokens?: number; // For 'enabled' type
+	effort?: 'low' | 'medium' | 'high' | 'max'; // For 'adaptive' type
 }
 
 export interface GeminiThinkingConfig {
@@ -41,6 +41,8 @@ export interface ApiConfig {
 	enablePromptOptimization?: boolean; // Enable prompt optimization agent (default: true)
 	enableAutoCompress?: boolean; // Enable automatic context compression (default: true)
 	showThinking?: boolean; // Show AI thinking process in UI (default: true)
+	// 流式长时无返回超时(单位: 秒,默认: 180)
+	streamIdleTimeoutSec?: number;
 	// 选填：覆盖 system-prompt.json 的 active（undefined=跟随全局；''=不使用；string=按ID选择；string[]=多选）
 	systemPromptId?: string | string[];
 	// 选填：覆盖 custom-headers.json 的 active（undefined=跟随全局；''=不使用；其它=按ID选择）
@@ -105,6 +107,16 @@ export interface CustomHeadersConfig {
 	schemes: CustomHeadersItem[]; // 方案列表
 }
 
+export const DEFAULT_STREAM_IDLE_TIMEOUT_SEC = 180;
+
+function normalizeStreamIdleTimeoutSec(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+		return DEFAULT_STREAM_IDLE_TIMEOUT_SEC;
+	}
+
+	return value;
+}
+
 export const DEFAULT_CONFIG: AppConfig = {
 	snowcfg: {
 		baseUrl: 'https://api.openai.com/v1',
@@ -115,6 +127,7 @@ export const DEFAULT_CONFIG: AppConfig = {
 		maxContextTokens: 120000,
 		maxTokens: 32000,
 		anthropicBeta: false,
+		streamIdleTimeoutSec: DEFAULT_STREAM_IDLE_TIMEOUT_SEC,
 		editSimilarityThreshold: 0.75,
 	},
 };
@@ -220,6 +233,9 @@ export function loadConfig(): AppConfig {
 				requestMethod: normalizeRequestMethod(
 					configWithoutMcp.snowcfg.requestMethod,
 				),
+				streamIdleTimeoutSec: normalizeStreamIdleTimeoutSec(
+					configWithoutMcp.snowcfg.streamIdleTimeoutSec,
+				),
 			};
 		} else if (configWithoutMcp.openai) {
 			// 向下兼容旧版本
@@ -229,11 +245,15 @@ export function loadConfig(): AppConfig {
 				requestMethod: normalizeRequestMethod(
 					configWithoutMcp.openai.requestMethod,
 				),
+				streamIdleTimeoutSec: normalizeStreamIdleTimeoutSec(
+					configWithoutMcp.openai.streamIdleTimeoutSec,
+				),
 			};
 		} else {
 			apiConfig = {
 				...DEFAULT_CONFIG.snowcfg,
 				requestMethod: DEFAULT_CONFIG.snowcfg.requestMethod,
+				streamIdleTimeoutSec: DEFAULT_STREAM_IDLE_TIMEOUT_SEC,
 			};
 		}
 
@@ -301,9 +321,17 @@ export async function updateOpenAiConfig(
 	apiConfig: Partial<ApiConfig>,
 ): Promise<void> {
 	const currentConfig = loadConfig();
+	const normalizedIdleTimeoutSec = normalizeStreamIdleTimeoutSec(
+		apiConfig.streamIdleTimeoutSec ??
+			currentConfig.snowcfg.streamIdleTimeoutSec,
+	);
 	const updatedConfig: AppConfig = {
 		...currentConfig,
-		snowcfg: {...currentConfig.snowcfg, ...apiConfig},
+		snowcfg: {
+			...currentConfig.snowcfg,
+			...apiConfig,
+			streamIdleTimeoutSec: normalizedIdleTimeoutSec,
+		},
 	};
 	saveConfig(updatedConfig);
 

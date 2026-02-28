@@ -179,7 +179,11 @@ export const en: TranslationKeys = {
 		enableAutoCompress: 'Enable Auto Compression:',
 		showThinking: 'Show Thinking Process:',
 		thinkingEnabled: 'Thinking Enabled:',
+		thinkingMode: 'Thinking Mode:',
+		thinkingModeTokens: 'Input Tokens',
+		thinkingModeAdaptive: 'Adaptive',
 		thinkingBudgetTokens: 'Thinking Budget Tokens:',
+		thinkingEffort: 'Thinking Effort:',
 		geminiThinkingEnabled: 'Gemini Thinking Enabled:',
 		geminiThinkingBudget: 'Gemini Thinking Budget:',
 		responsesReasoningEnabled: 'Responses Reasoning Enabled:',
@@ -188,6 +192,7 @@ export const en: TranslationKeys = {
 		basicModel: 'Basic Model(Type to search):',
 		maxContextTokens: 'Max Context Tokens:',
 		maxTokens: 'Max Tokens:',
+		streamIdleTimeoutSec: 'Stream Idle Timeout(sec):',
 		toolResultTokenLimit: 'Tool Result Token Limit:',
 		editSimilarityThreshold:
 			'Edit Similarity Threshold(0-1, change with caution):',
@@ -213,7 +218,7 @@ export const en: TranslationKeys = {
 		manualInputHint: 'Press Enter to confirm, Esc to cancel',
 		loadingError: '⚠ Failed to load models from API',
 		requestMethodChat:
-			'Chat Completions - Modern chat API (GPT-4, GPT-3.5-turbo)',
+			'Chat Completions - Modern chat API (DeepSeek)',
 		requestMethodResponses:
 			'Responses - New responses API (2025, with built-in tools)',
 		requestMethodGemini: 'Gemini - Google Gemini API',
@@ -487,6 +492,7 @@ export const en: TranslationKeys = {
 		commands: {
 			help: 'Show keyboard shortcuts and help information',
 			clear: 'Clear chat context and conversation history',
+			copyLast: 'Copy last AI message to clipboard',
 			resume: 'Resume a conversation',
 			mcp: 'Show Model Context Protocol services and tools',
 			yolo: 'Toggle unattended mode (auto-approve all tools)',
@@ -523,6 +529,14 @@ export const en: TranslationKeys = {
 			diff: 'Review file changes from a conversation in IDE diff view',
 			quit: 'Exit the application',
 		},
+		copyLastFeedback: {
+			noAssistantMessage: 'No AI assistant message found to copy.',
+			emptyAssistantMessage:
+				'The last AI assistant message has no content to copy.',
+			copySuccess: '✓ Last AI message copied to clipboard',
+			copyFailedPrefix: '✗ Failed to copy to clipboard',
+			unknownError: 'Unknown error',
+		},
 	},
 	permissionsPanel: {
 		title: 'Permissions',
@@ -551,6 +565,7 @@ export const en: TranslationKeys = {
 		requestMethod: 'Request Method:',
 		showThinkingProcess: 'Show Thinking Process:',
 		enableThinking: 'Enable Thinking:',
+		thinkingMode: 'Thinking Mode:',
 		thinkingStrength: 'Thinking Strength:',
 		inputNumberHint: 'Enter number, press Enter to save',
 		escCancel: 'Esc to cancel',

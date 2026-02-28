@@ -165,7 +165,11 @@ export type TranslationKeys = {
 		enableAutoCompress: string;
 		showThinking: string;
 		thinkingEnabled: string;
+		thinkingMode: string;
+		thinkingModeTokens: string;
+		thinkingModeAdaptive: string;
 		thinkingBudgetTokens: string;
+		thinkingEffort: string;
 		geminiThinkingEnabled: string;
 		geminiThinkingBudget: string;
 		responsesReasoningEnabled: string;
@@ -174,6 +178,7 @@ export type TranslationKeys = {
 		basicModel: string;
 		maxContextTokens: string;
 		maxTokens: string;
+		streamIdleTimeoutSec: string;
 		toolResultTokenLimit: string;
 		editSimilarityThreshold: string;
 		notSet: string;
@@ -456,6 +461,7 @@ export type TranslationKeys = {
 		commands: {
 			help: string;
 			clear: string;
+			copyLast: string;
 			resume: string;
 			mcp: string;
 			yolo: string;
@@ -484,6 +490,13 @@ export type TranslationKeys = {
 			worktree: string; // Git branch management panel
 			diff: string;
 			quit: string;
+		};
+		copyLastFeedback: {
+			noAssistantMessage: string;
+			emptyAssistantMessage: string;
+			copySuccess: string;
+			copyFailedPrefix: string;
+			unknownError: string;
 		};
 	};
 	// Profile Panel
@@ -558,6 +571,7 @@ export type TranslationKeys = {
 		requestMethod: string;
 		showThinkingProcess: string;
 		enableThinking: string;
+		thinkingMode: string;
 		thinkingStrength: string;
 		inputNumberHint: string;
 		escCancel: string;

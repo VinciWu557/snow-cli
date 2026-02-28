@@ -511,11 +511,26 @@ Proactively delete obsolete, redundant, or overly detailed completed subtasks to
 						parentId?: string;
 					};
 
+					// 智能解析 content：处理 JSON 字符串形式的数组
+					let parsedContent: string | string[] = content;
+					if (typeof content === 'string') {
+						// 尝试解析为 JSON 数组
+						try {
+							const parsed = JSON.parse(content);
+							if (Array.isArray(parsed)) {
+								parsedContent = parsed;
+							}
+							// 如果解析结果不是数组，保持原字符串作为单个 TODO
+						} catch {
+							// 解析失败，保持原字符串
+						}
+					}
+
 					// 支持批量添加或单个添加
-					if (Array.isArray(content)) {
+					if (Array.isArray(parsedContent)) {
 						// 批量添加多个TODO项
 						let currentList = await this.getTodoList(sessionId);
-						for (const item of content) {
+						for (const item of parsedContent) {
 							currentList = await this.addTodoItem(sessionId, item, parentId);
 						}
 						return {
@@ -528,7 +543,11 @@ Proactively delete obsolete, redundant, or overly detailed completed subtasks to
 						};
 					} else {
 						// 单个添加
-						const result = await this.addTodoItem(sessionId, content, parentId);
+						const result = await this.addTodoItem(
+							sessionId,
+							parsedContent,
+							parentId,
+						);
 						return {
 							content: [
 								{

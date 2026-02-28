@@ -40,8 +40,27 @@ function getWorkspaceFolderForActiveEditor(): string | undefined {
 	);
 }
 
+function quotePathIfNeeded(path: string): string {
+	return path.includes(' ') ? `"${path}"` : path;
+}
+
+function formatPathPayload(paths: readonly string[]): string {
+	return paths.map(quotePathIfNeeded).join(' ');
+}
+
+function getExistingSplitSnowTerminal(): vscode.Terminal | undefined {
+	const active = vscode.window.activeTerminal;
+	if (active?.name === 'Snow CLI') {
+		return active;
+	}
+	const snowTerminals = vscode.window.terminals.filter(
+		terminal => terminal.name === 'Snow CLI',
+	);
+	return snowTerminals.at(-1);
+}
+
 /** Create a new split terminal in the right editor column (allows multiple instances) */
-async function openSplitTerminal(): Promise<void> {
+async function openSplitTerminal(): Promise<vscode.Terminal> {
 	const startupCommand = getConfig<string>('startupCommand', 'snow');
 
 	const workspaceFolder = getWorkspaceFolderForActiveEditor();
@@ -64,6 +83,51 @@ async function openSplitTerminal(): Promise<void> {
 	if (startupCommand) {
 		terminal.sendText(startupCommand);
 	}
+
+	return terminal;
+}
+
+async function ensureSplitSnowTerminal(): Promise<vscode.Terminal> {
+	const existing = getExistingSplitSnowTerminal();
+	if (existing) {
+		existing.show();
+		return existing;
+	}
+	return openSplitTerminal();
+}
+
+async function sendFilePathsToSplitTerminal(paths: string[]): Promise<void> {
+	if (paths.length === 0) {
+		return;
+	}
+
+	const terminal = await ensureSplitSnowTerminal();
+	terminal.sendText(formatPathPayload(paths), false);
+}
+
+async function sendFilePathsToConfiguredTerminal(paths: string[]): Promise<void> {
+	if (paths.length === 0) {
+		return;
+	}
+
+	const mode = getConfig<string>('terminalMode', 'split');
+	if (mode === 'sidebar') {
+		sidebarProvider?.sendFilePaths(paths);
+		return;
+	}
+
+	await sendFilePathsToSplitTerminal(paths);
+}
+
+async function pickPaths(mode: 'file' | 'folder'): Promise<string[]> {
+	const uris = await vscode.window.showOpenDialog({
+		canSelectFiles: mode === 'file',
+		canSelectFolders: mode === 'folder',
+		canSelectMany: true,
+		openLabel: mode === 'file' ? 'Add File Path' : 'Add Folder Path',
+	});
+
+	return uris?.map(uri => uri.fsPath) ?? [];
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -117,13 +181,21 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		}),
 		vscode.commands.registerCommand('snow-cli.restartSidebarTerminal', () => {
-			sidebarProvider?.restartTerminal({reason: 'manual'});
+			sidebarProvider?.restartTerminal({reason: 'manualRestart'});
 		}),
 		vscode.commands.registerCommand('snow-cli.openSnowSettings', async () => {
 			await vscode.commands.executeCommand(
 				'workbench.action.openSettings',
 				'@ext:mufasa.snow-cli',
 			);
+		}),
+		vscode.commands.registerCommand('snow-cli.addFolderPath', async () => {
+			const paths = await pickPaths('folder');
+			await sendFilePathsToConfiguredTerminal(paths);
+		}),
+		vscode.commands.registerCommand('snow-cli.addFilePath', async () => {
+			const paths = await pickPaths('file');
+			await sendFilePathsToConfiguredTerminal(paths);
 		}),
 		vscode.commands.registerCommand('snow-cli.focusSidebar', async () => {
 			const mode = getConfig<string>('terminalMode', 'split');
@@ -133,6 +205,22 @@ export function activate(context: vscode.ExtensionContext) {
 			} else {
 				await openSplitTerminal();
 			}
+		}),
+		vscode.commands.registerCommand('snow-cli.sendFilePaths', async (...args: unknown[]) => {
+			// Context menu: (clickedUri, selectedUris) or command palette: no args
+			const selectedUris = args[1] as vscode.Uri[] | undefined;
+			const clickedUri = args[0] as vscode.Uri | undefined;
+			const uris = selectedUris?.length ? selectedUris : clickedUri ? [clickedUri] : [];
+			const paths = uris.map(u => u.fsPath);
+			if (paths.length === 0) {
+				// Fallback: use active editor
+				const active = vscode.window.activeTextEditor?.document.uri.fsPath;
+				if (active) { paths.push(active); }
+			}
+			if (paths.length === 0) {
+				return;
+			}
+			await sendFilePathsToConfiguredTerminal(paths);
 		}),
 	);
 

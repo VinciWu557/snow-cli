@@ -36,6 +36,7 @@ export interface CommandResult {
 		| 'showRoleList'
 		| 'showPermissionsPanel'
 		| 'reindexCodebase'
+		| 'copyLastMessage'
 		| 'toggleCodebase'
 		| 'showBranchPanel'
 		| 'showDiffReviewPanel'

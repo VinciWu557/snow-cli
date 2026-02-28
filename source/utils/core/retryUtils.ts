@@ -48,6 +48,11 @@ async function delay(ms: number, abortSignal?: AbortSignal): Promise<void> {
  * 判断错误是否可重试
  */
 function isRetriableError(error: Error): boolean {
+	// 优先通过错误名称判定,降低对 message 内容的依赖
+	if (error.name === 'StreamIdleTimeoutError') {
+		return true;
+	}
+
 	const errorMessage = error.message.toLowerCase();
 
 	// 网络错误
@@ -216,8 +221,15 @@ export async function* withRetryGenerator<T>(
 				throw lastError;
 			}
 
-			// 如果已经产生过数据，不再重试（避免重复数据）
-			if (hasYielded) {
+			// 如果已经产生过数据，需要特殊处理流中断
+			// 对于流中断错误，即使已经产生数据，也可以尝试重试
+			// 空闲超时也被视为流中断，需要重试
+			const isStreamInterruption =
+				/Stream terminated unexpectedly|incomplete data|reader error|^terminated$|idle timeout/i.test(
+					lastError.message,
+				);
+
+			if (hasYielded && !isStreamInterruption) {
 				throw lastError;
 			}
 

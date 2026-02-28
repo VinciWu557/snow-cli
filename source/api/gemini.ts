@@ -8,6 +8,10 @@ import {
 	withRetryGenerator,
 	parseJsonWithFix,
 } from '../utils/core/retryUtils.js';
+import {
+	createIdleTimeoutGuard,
+	StreamIdleTimeoutError,
+} from '../utils/core/streamGuards.js';
 import type {ChatMessage, ChatCompletionTool, UsageInfo} from './types.js';
 import {addProxyToFetchOptions} from '../utils/core/proxyUtils.js';
 import {saveUsageToFile} from '../utils/core/usageLogger.js';
@@ -571,26 +575,48 @@ export async function* createStreamingGeminiCompletion(
 			const decoder = new TextDecoder();
 			let buffer = '';
 
+			const idleTimeoutMs = (config.streamIdleTimeoutSec ?? 180) * 1000;
+			// 创建空闲超时保护器
+			const guard = createIdleTimeoutGuard({
+				reader,
+				idleTimeoutMs,
+				onTimeout: () => {
+					throw new StreamIdleTimeoutError(
+						`No data received for ${idleTimeoutMs}ms`,
+						idleTimeoutMs,
+					);
+				},
+			});
+
 			try {
 				while (true) {
-					const {done, value} = await reader.read();
-
-					if (done) {
-						// ✅ 关键修复：检查buffer是否有残留数据
-						if (buffer.trim()) {
-							// 连接异常中断，抛出明确错误
-							throw new Error(
-								`Stream terminated unexpectedly with incomplete data: ${buffer.substring(
-									0,
-									100,
-								)}...`,
-							);
-						}
-						break; // 正常结束
+					if (abortSignal?.aborted) {
+						guard.abandon();
+						return;
 					}
 
-					if (abortSignal?.aborted) {
-						return;
+					const {done, value} = await reader.read();
+
+					// 检查是否有超时错误需要在读取循环中抛出(确保被正确的 try/catch 捕获)
+					const timeoutError = guard.getTimeoutError();
+					if (timeoutError) {
+						throw timeoutError;
+					}
+
+					// 检查是否已被丢弃(竞态条件防护)
+					if (guard.isAbandoned()) {
+						continue;
+					}
+
+					if (done) {
+						// 连接异常中断时,残留半包不应被静默丢弃,应抛出可重试错误
+						if (buffer.trim()) {
+							// 连接异常中断,抛出明确错误
+							const errorMsg = `[API_ERROR] [RETRIABLE] Gemini stream terminated unexpectedly with incomplete data`;
+							const bufferPreview = buffer.substring(0, 100);
+							throw new Error(`${errorMsg}: ${bufferPreview}...`);
+						}
+						break; // 正常结束
 					}
 
 					buffer += decoder.decode(value, {stream: true});
@@ -605,13 +631,13 @@ export async function* createStreamingGeminiCompletion(
 							break;
 						}
 
-						// Handle both "event: " and "event:" formats
+						// 处理 "event: " 和 "event:" 两种格式
 						if (trimmed.startsWith('event:')) {
-							// Event type, will be followed by data
+							// 事件类型,后面会跟随数据
 							continue;
 						}
 
-						// Handle both "data: " and "data:" formats
+						// 处理 "data: " 和 "data:" 两种格式
 						if (trimmed.startsWith('data:')) {
 							const data = trimmed.startsWith('data: ')
 								? trimmed.slice(6)
@@ -624,6 +650,15 @@ export async function* createStreamingGeminiCompletion(
 
 							if (parseResult.success) {
 								const chunk = parseResult.data;
+								const hasBusinessDelta = !!chunk?.candidates?.some(
+									(candidate: any) =>
+										candidate?.content?.parts?.some((part: any) =>
+											Boolean(part?.text || part?.functionCall),
+										),
+								);
+								if (hasBusinessDelta) {
+									guard.touch();
+								}
 
 								// Process candidates
 								if (chunk.candidates && chunk.candidates.length > 0) {
@@ -634,18 +669,22 @@ export async function* createStreamingGeminiCompletion(
 											// When part.thought === true, the text field contains thinking content
 											if (part.thought === true && part.text) {
 												thinkingTextBuffer += part.text;
-												yield {
-													type: 'reasoning_delta',
-													delta: part.text,
-												};
+												if (!guard.isAbandoned()) {
+													yield {
+														type: 'reasoning_delta',
+														delta: part.text,
+													};
+												}
 											}
 											// Process regular text content (when thought is not true)
 											else if (part.text) {
 												contentBuffer += part.text;
-												yield {
-													type: 'content',
-													content: part.text,
-												};
+												if (!guard.isAbandoned()) {
+													yield {
+														type: 'content',
+														content: part.text,
+													};
+												}
 											}
 
 											// Process function calls
@@ -712,6 +751,8 @@ export async function* createStreamingGeminiCompletion(
 					remainingBuffer: buffer.substring(0, 200),
 				});
 				throw error;
+			} finally {
+				guard.dispose();
 			}
 
 			// Yield tool calls if any

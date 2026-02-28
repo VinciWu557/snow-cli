@@ -168,6 +168,53 @@ export function formatToolCallMessage(toolCall: ToolCall): {
 						} else if (isFilePath(value)) {
 							// 路径参数：智能截断，保留文件名
 							valueStr = `"${smartTruncatePath(value)}"`;
+						} else if (value.startsWith('[') || value.startsWith('{')) {
+							// 尝试解析 JSON 字符串（可能是被序列化的数组或对象）
+							try {
+								const parsed = JSON.parse(value);
+								if (Array.isArray(parsed)) {
+									// 解析成功，按数组格式化
+									if (parsed.length === 0) {
+										valueStr = '[]';
+									} else if (parsed.length <= 3) {
+										// 少量元素：显示简化内容
+										const items = parsed
+											.map(item =>
+												typeof item === 'string'
+													? item.length > 20
+														? `"${item.slice(0, 20)}..."`
+														: `"${item}"`
+													: typeof item === 'object'
+													? '{...}'
+													: String(item),
+											)
+											.join(', ');
+										valueStr = `[${items}]`;
+									} else {
+										// 多个元素：显示数量
+										valueStr = `<array with ${parsed.length} items>`;
+									}
+								} else if (typeof parsed === 'object' && parsed !== null) {
+									// 解析为对象
+									const keys = Object.keys(parsed);
+									if (keys.length === 0) {
+										valueStr = '{}';
+									} else if (keys.length <= 3) {
+										valueStr = `{${keys.join(', ')}}`;
+									} else {
+										valueStr = `{${keys.slice(0, 3).join(', ')}, ...}`;
+									}
+								} else {
+									// 其他解析结果（数字、布尔等）
+									valueStr = String(parsed);
+								}
+							} catch {
+								// 解析失败，当作普通字符串处理
+								valueStr =
+									value.length > 60
+										? `"${value.slice(0, 60)}..."`
+										: `"${value}"`;
+							}
 						} else {
 							// 其他字符串类型参数
 							valueStr =

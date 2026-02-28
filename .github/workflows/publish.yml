@@ -58,7 +58,7 @@ jobs:
 
             ### What's New
 
-            - Optimize some UI display effects
+            - Add Anthropic request signature parameter padding strategy
 
             ### Installation
             ```bash

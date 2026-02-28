@@ -58,7 +58,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: vsix-v${{ env.PACKAGE_VERSION }}
-          files: snow-cli-${{ env.PACKAGE_VERSION }}.vsix
+          files: VSIX/snow-cli-${{ env.PACKAGE_VERSION }}.vsix
           name: VSCode Extension v${{ env.PACKAGE_VERSION }}
           body: |
             ## 🚀 Snow CLI VSCode Extension v${{ env.PACKAGE_VERSION }}
@@ -94,3 +94,5 @@ jobs:
             - Sidebar and split terminal modes
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
+          make_latest: true

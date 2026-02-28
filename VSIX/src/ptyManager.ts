@@ -11,7 +11,7 @@ function loadPty(): any {
 
 export interface PtyManagerEvents {
 	onData: (data: string) => void;
-	onExit: (code: number, context?: {suppressed?: boolean; reason?: string}) => void;
+	onExit: (code: number) => void;
 }
 
 export type ShellType = 'auto' | 'powershell' | 'cmd';
