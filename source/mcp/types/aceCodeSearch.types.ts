@@ -60,7 +60,31 @@ export interface SemanticSearchResult {
 	references: CodeReference[];
 	totalResults: number;
 	searchTime: number;
+	degraded?: boolean;
+	degradedReason?: string;
 }
+
+export type AceSearchPhase =
+	| 'prepare'
+	| 'index_check'
+	| 'index_build_or_warmup'
+	| 'search_execute'
+	| 'reference_expand'
+	| 'result_rank_and_pack'
+	| 'fallback'
+	| 'completed'
+	| 'timeout'
+	| 'cancelled';
+
+export interface AceProgressEvent {
+	phase: AceSearchPhase;
+	message: string;
+	percent?: number;
+	elapsedMs: number;
+	metadata?: Record<string, unknown>;
+}
+
+export type AceProgressCallback = (event: AceProgressEvent) => void;
 
 /**
  * AST node structure

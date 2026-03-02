@@ -1,17 +1,150 @@
 import * as path from 'path';
 import {ACECodeSearchService} from '../aceCodeSearch.js';
 import {LSPManager} from './LSPManager.js';
-import type {CodeSymbol, CodeReference} from '../types/aceCodeSearch.types.js';
+import {sanitizeTerminalText} from '../../utils/security/sanitizeTerminalText.js';
+import type {
+	AceProgressCallback,
+	AceSearchPhase,
+	CodeSymbol,
+	CodeReference,
+	SemanticSearchResult,
+} from '../types/aceCodeSearch.types.js';
+
+export type HybridSearchRuntimeOptions = {
+	onProgress?: AceProgressCallback;
+	abortSignal?: AbortSignal;
+	totalTimeoutMs?: number;
+	phaseTimeoutMs?: number;
+};
 
 export class HybridCodeSearchService {
 	private lspManager: LSPManager;
 	private regexSearch: ACECodeSearchService;
 	private lspTimeout = 3000; // 3秒超时
 	private csharpLspTimeout = 15000; // csharp-ls cold start / solution load can be slow
+	private defaultTotalTimeoutMs = 20000;
+	private cancelledMessage = 'Search cancelled by user';
 
 	constructor(basePath: string = process.cwd()) {
 		this.lspManager = new LSPManager(basePath);
 		this.regexSearch = new ACECodeSearchService(basePath);
+	}
+
+	private emitProgress(
+		options: HybridSearchRuntimeOptions | undefined,
+		phase: AceSearchPhase,
+		message: string,
+		startedAt: number,
+		percent?: number,
+		metadata?: Record<string, unknown>,
+	): void {
+		options?.onProgress?.({
+			phase,
+			message,
+			percent,
+			elapsedMs: Date.now() - startedAt,
+			metadata,
+		});
+	}
+
+	private createAbortError(message: string = this.cancelledMessage): Error {
+		const error = new Error(message);
+		error.name = 'AbortError';
+		return error;
+	}
+
+	private createTimeoutError(message: string): Error {
+		const error = new Error(message);
+		error.name = 'TimeoutError';
+		return error;
+	}
+
+	private normalizeSearchError(error: unknown): {
+		phase: AceSearchPhase;
+		message: string;
+	} {
+		const message = error instanceof Error ? error.message : String(error);
+		const normalizedMessage = message.toLowerCase();
+
+		if (
+			(error instanceof Error && error.name === 'AbortError') ||
+			normalizedMessage.includes('cancelled') ||
+			normalizedMessage.includes('aborted')
+		) {
+			return {phase: 'cancelled', message: this.cancelledMessage};
+		}
+
+		return {phase: 'timeout', message};
+	}
+
+	private ensureNotAborted(options?: HybridSearchRuntimeOptions): void {
+		if (options?.abortSignal?.aborted) {
+			throw this.createAbortError();
+		}
+	}
+
+	private async runWithTimeout<T>(
+		task: () => Promise<T>,
+		timeoutMs: number,
+		errorMessage: string,
+		onHeartbeat?: () => void,
+		abortSignal?: AbortSignal,
+	): Promise<T> {
+		if (abortSignal?.aborted) {
+			throw this.createAbortError();
+		}
+
+		let heartbeatTimer: NodeJS.Timeout | null = null;
+		let timeoutTimer: NodeJS.Timeout | null = null;
+		let abortHandler: (() => void) | null = null;
+		const guardPromises: Promise<T>[] = [];
+
+		if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+			guardPromises.push(
+				new Promise<T>((_, reject) => {
+					timeoutTimer = setTimeout(() => {
+						reject(this.createTimeoutError(errorMessage));
+					}, timeoutMs);
+				}),
+			);
+		}
+
+		if (abortSignal) {
+			guardPromises.push(
+				new Promise<T>((_, reject) => {
+					abortHandler = () => reject(this.createAbortError());
+					abortSignal.addEventListener('abort', abortHandler, {once: true});
+				}),
+			);
+		}
+
+		if (onHeartbeat) {
+			heartbeatTimer = setInterval(() => {
+				if (!abortSignal?.aborted) {
+					onHeartbeat();
+				}
+			}, 4000);
+		}
+
+		const taskPromise = task();
+
+		try {
+			if (guardPromises.length === 0) {
+				return await taskPromise;
+			}
+
+			return await Promise.race([taskPromise, ...guardPromises]);
+		} finally {
+			if (heartbeatTimer) {
+				clearInterval(heartbeatTimer);
+			}
+			if (timeoutTimer) {
+				clearTimeout(timeoutTimer);
+			}
+			if (abortSignal && abortHandler) {
+				abortSignal.removeEventListener('abort', abortHandler);
+			}
+		}
 	}
 
 	async findDefinition(
@@ -19,24 +152,118 @@ export class HybridCodeSearchService {
 		contextFile?: string,
 		line?: number,
 		column?: number,
+		options?: HybridSearchRuntimeOptions,
 	): Promise<CodeSymbol | null> {
+		const startedAt = Date.now();
+		const totalTimeout =
+			typeof options?.totalTimeoutMs === 'number'
+				? options.totalTimeoutMs
+				: this.defaultTotalTimeoutMs;
+
+		this.emitProgress(
+			options,
+			'prepare',
+			`Preparing definition lookup for \"${sanitizeTerminalText(symbolName)}\"`,
+			startedAt,
+			5,
+		);
+		this.ensureNotAborted(options);
+
 		if (contextFile) {
 			try {
+				this.emitProgress(
+					options,
+					'search_execute',
+					'Trying LSP definition lookup',
+					startedAt,
+					20,
+				);
 				const lspResult = await this.findDefinitionWithLSP(
 					symbolName,
 					contextFile,
 					line,
 					column,
+					options,
 				);
 				if (lspResult) {
+					this.emitProgress(
+						options,
+						'completed',
+						'LSP definition lookup completed',
+						startedAt,
+						100,
+					);
 					return lspResult;
 				}
 			} catch (error) {
-				// LSP failed, fallback to regex
+				const normalizedError = this.normalizeSearchError(error);
+				if (normalizedError.phase === 'cancelled') {
+					this.emitProgress(
+						options,
+						normalizedError.phase,
+						normalizedError.message,
+						startedAt,
+						100,
+					);
+					return null;
+				}
+
+				// LSP 查询失败，降级到 regex 搜索
+				this.emitProgress(
+					options,
+					'fallback',
+					'LSP lookup unavailable, switching to index search',
+					startedAt,
+					45,
+				);
 			}
 		}
 
-		return this.regexSearch.findDefinition(symbolName, contextFile);
+		try {
+			this.emitProgress(
+				options,
+				'index_check',
+				'Checking symbol index for definition fallback',
+				startedAt,
+				55,
+			);
+			this.ensureNotAborted(options);
+
+			const result = await this.runWithTimeout(
+				() => this.regexSearch.findDefinition(symbolName, contextFile),
+				totalTimeout,
+				'Definition search timeout',
+				() => {
+					this.emitProgress(
+						options,
+						'search_execute',
+						'Searching definition in index...',
+						startedAt,
+						70,
+					);
+				},
+				options?.abortSignal,
+			);
+
+			this.emitProgress(
+				options,
+				'completed',
+				'Definition lookup finished',
+				startedAt,
+				100,
+			);
+			return result;
+		} catch (error) {
+			const normalizedError = this.normalizeSearchError(error);
+			this.emitProgress(
+				options,
+				normalizedError.phase,
+				normalizedError.message,
+				startedAt,
+				100,
+			);
+			return null;
+		}
 	}
 
 	private async findDefinitionWithLSP(
@@ -44,15 +271,18 @@ export class HybridCodeSearchService {
 		contextFile: string,
 		line?: number,
 		column?: number,
+		options?: HybridSearchRuntimeOptions,
 	): Promise<CodeSymbol | null> {
+		this.ensureNotAborted(options);
 		let position: {line: number; column: number} | null = null;
 
 		const fs = await import('fs/promises');
 		const content = await fs.readFile(contextFile, 'utf-8');
 		const lines = content.split('\n');
+		this.ensureNotAborted(options);
 
-		// If line and column are provided, prefer them, but for C# verify/adjust
-		// the column so it points to the actual symbol token.
+		// 如果提供了 line 和 column，优先使用，但对 C# 需要验证/调整
+		// column 使其指向实际的符号 token
 		if (line !== undefined && column !== undefined) {
 			let adjustedLine = line;
 			let adjustedColumn = column;
@@ -87,8 +317,9 @@ export class HybridCodeSearchService {
 
 			position = {line: adjustedLine, column: adjustedColumn};
 		} else {
-			// Otherwise, find the first occurrence of the symbol in contextFile
+			// 在 contextFile 中查找符号的首次出现位置
 			for (let i = 0; i < lines.length; i++) {
+				this.ensureNotAborted(options);
 				const textLine = lines[i];
 				if (!textLine) continue;
 
@@ -106,27 +337,43 @@ export class HybridCodeSearchService {
 			return null;
 		}
 
-		// Now ask LSP to find the definition (which may be in another file)
-		const timeoutMs = contextFile.endsWith('.cs')
-			? this.csharpLspTimeout
-			: this.lspTimeout;
-		const timeoutPromise = new Promise<null>(resolve =>
-			setTimeout(() => resolve(null), timeoutMs),
-		);
+		// 向 LSP 请求定义查找（结果可能在其他文件中）
+		const timeoutMs =
+			typeof options?.phaseTimeoutMs === 'number'
+				? options.phaseTimeoutMs
+				: contextFile.endsWith('.cs')
+				? this.csharpLspTimeout
+				: this.lspTimeout;
 
-		const lspPromise = this.lspManager.findDefinition(
-			contextFile,
-			position.line,
-			position.column,
-		);
+		this.ensureNotAborted(options);
+		let location: Awaited<ReturnType<LSPManager['findDefinition']>>;
+		try {
+			location = await this.runWithTimeout(
+				() =>
+					this.lspManager.findDefinition(
+						contextFile,
+						position.line,
+						position.column,
+					),
+				timeoutMs,
+				'Definition search timeout',
+				undefined,
+				options?.abortSignal,
+			);
+		} catch (error) {
+			const normalizedError = this.normalizeSearchError(error);
+			if (normalizedError.phase === 'cancelled') {
+				throw this.createAbortError();
+			}
+			return null;
+		}
 
-		const location = await Promise.race([lspPromise, timeoutPromise]);
-
+		this.ensureNotAborted(options);
 		if (!location) {
 			return null;
 		}
 
-		// Convert LSP location to CodeSymbol
+		// 将 LSP location 转换为 CodeSymbol
 		const filePath = this.uriToPath(location.uri);
 
 		return {
@@ -142,8 +389,65 @@ export class HybridCodeSearchService {
 	async findReferences(
 		symbolName: string,
 		maxResults = 100,
+		options?: HybridSearchRuntimeOptions,
 	): Promise<CodeReference[]> {
-		return this.regexSearch.findReferences(symbolName, maxResults);
+		const startedAt = Date.now();
+		const totalTimeout =
+			typeof options?.totalTimeoutMs === 'number'
+				? options.totalTimeoutMs
+				: this.defaultTotalTimeoutMs;
+
+		this.emitProgress(
+			options,
+			'prepare',
+			`Preparing references lookup for \"${sanitizeTerminalText(symbolName)}\"`,
+			startedAt,
+			5,
+		);
+		try {
+			this.ensureNotAborted(options);
+			this.emitProgress(
+				options,
+				'search_execute',
+				'Searching references in code index',
+				startedAt,
+				45,
+			);
+			const refs = await this.runWithTimeout(
+				() => this.regexSearch.findReferences(symbolName, maxResults),
+				totalTimeout,
+				'Reference search timeout',
+				() => {
+					this.emitProgress(
+						options,
+						'reference_expand',
+						'Expanding symbol references...',
+						startedAt,
+						70,
+					);
+				},
+				options?.abortSignal,
+			);
+			this.emitProgress(
+				options,
+				'completed',
+				`Reference lookup completed with ${refs.length} result(s)`,
+				startedAt,
+				100,
+				{count: refs.length},
+			);
+			return refs;
+		} catch (error) {
+			const normalizedError = this.normalizeSearchError(error);
+			this.emitProgress(
+				options,
+				normalizedError.phase,
+				normalizedError.message,
+				startedAt,
+				100,
+			);
+			return [];
+		}
 	}
 
 	async getFileOutline(
@@ -152,24 +456,78 @@ export class HybridCodeSearchService {
 			maxResults?: number;
 			includeContext?: boolean;
 			symbolTypes?: CodeSymbol['type'][];
+			onProgress?: AceProgressCallback;
+			abortSignal?: AbortSignal;
+			timeoutMs?: number;
 		},
 	): Promise<CodeSymbol[]> {
+		const startedAt = Date.now();
+		this.emitProgress(
+			{onProgress: options?.onProgress},
+			'prepare',
+			`Preparing file outline for ${filePath}`,
+			startedAt,
+			5,
+		);
+
 		try {
+			if (options?.abortSignal?.aborted) {
+				throw new Error('Search cancelled by user');
+			}
 			const timeoutPromise = new Promise<null>(resolve =>
-				setTimeout(() => resolve(null), this.lspTimeout),
+				setTimeout(
+					() => resolve(null),
+					typeof options?.timeoutMs === 'number'
+						? options.timeoutMs
+						: this.lspTimeout,
+				),
 			);
 
+			this.emitProgress(
+				{onProgress: options?.onProgress},
+				'search_execute',
+				'Trying LSP outline provider',
+				startedAt,
+				35,
+			);
 			const lspPromise = this.lspManager.getDocumentSymbols(filePath);
 			const symbols = await Promise.race([lspPromise, timeoutPromise]);
 
 			if (symbols && symbols.length > 0) {
+				this.emitProgress(
+					{onProgress: options?.onProgress},
+					'completed',
+					'LSP outline lookup completed',
+					startedAt,
+					100,
+				);
 				return this.convertLSPSymbolsToCodeSymbols(symbols, filePath);
 			}
 		} catch (error) {
-			// LSP failed, fallback to regex
+			// LSP 查询失败，降级到 regex
+			this.emitProgress(
+				{onProgress: options?.onProgress},
+				'fallback',
+				'LSP outline unavailable, switching to local parser',
+				startedAt,
+				55,
+			);
 		}
 
-		return this.regexSearch.getFileOutline(filePath, options);
+		const outline = await this.regexSearch.getFileOutline(filePath, {
+			maxResults: options?.maxResults,
+			includeContext: options?.includeContext,
+			symbolTypes: options?.symbolTypes,
+		});
+		this.emitProgress(
+			{onProgress: options?.onProgress},
+			'completed',
+			`Outline generated with ${outline.length} symbol(s)`,
+			startedAt,
+			100,
+			{count: outline.length},
+		);
+		return outline;
 	}
 
 	private convertLSPSymbolsToCodeSymbols(
@@ -249,8 +607,66 @@ export class HybridCodeSearchService {
 		fileGlob?: string,
 		isRegex = true,
 		maxResults = 100,
+		options?: HybridSearchRuntimeOptions,
 	) {
-		return this.regexSearch.textSearch(pattern, fileGlob, isRegex, maxResults);
+		const startedAt = Date.now();
+		const totalTimeout =
+			typeof options?.totalTimeoutMs === 'number'
+				? options.totalTimeoutMs
+				: this.defaultTotalTimeoutMs;
+
+		this.emitProgress(
+			options,
+			'prepare',
+			`Preparing text search for pattern: ${sanitizeTerminalText(pattern)}`,
+			startedAt,
+			5,
+		);
+		try {
+			this.ensureNotAborted(options);
+			this.emitProgress(
+				options,
+				'search_execute',
+				'Executing text search',
+				startedAt,
+				40,
+			);
+			const results = await this.runWithTimeout(
+				() =>
+					this.regexSearch.textSearch(pattern, fileGlob, isRegex, maxResults),
+				totalTimeout,
+				'Text search timeout',
+				() => {
+					this.emitProgress(
+						options,
+						'search_execute',
+						'Running text search across files...',
+						startedAt,
+						70,
+					);
+				},
+				options?.abortSignal,
+			);
+			this.emitProgress(
+				options,
+				'completed',
+				`Text search completed with ${results.length} match(es)`,
+				startedAt,
+				100,
+				{count: results.length},
+			);
+			return results;
+		} catch (error) {
+			const normalizedError = this.normalizeSearchError(error);
+			this.emitProgress(
+				options,
+				normalizedError.phase,
+				normalizedError.message,
+				startedAt,
+				100,
+			);
+			return [];
+		}
 	}
 
 	async semanticSearch(
@@ -259,14 +675,95 @@ export class HybridCodeSearchService {
 		language?: string,
 		symbolType?: CodeSymbol['type'],
 		maxResults = 50,
-	) {
-		return this.regexSearch.semanticSearch(
-			query,
-			searchType,
-			language,
-			symbolType,
-			maxResults,
+		options?: HybridSearchRuntimeOptions,
+	): Promise<SemanticSearchResult> {
+		const startedAt = Date.now();
+		const totalTimeout =
+			typeof options?.totalTimeoutMs === 'number'
+				? options.totalTimeoutMs
+				: this.defaultTotalTimeoutMs;
+
+		this.emitProgress(
+			options,
+			'prepare',
+			`Preparing semantic search for \"${sanitizeTerminalText(query)}\"`,
+			startedAt,
+			5,
 		);
+		this.emitProgress(
+			options,
+			'index_check',
+			'Checking and warming symbol index',
+			startedAt,
+			25,
+		);
+
+		try {
+			this.ensureNotAborted(options);
+			this.emitProgress(
+				options,
+				'search_execute',
+				'Executing semantic symbol search',
+				startedAt,
+				50,
+			);
+			const result = await this.runWithTimeout(
+				() =>
+					this.regexSearch.semanticSearch(
+						query,
+						searchType,
+						language,
+						symbolType,
+						maxResults,
+					),
+				totalTimeout,
+				'Semantic search timeout',
+				() => {
+					this.emitProgress(
+						options,
+						'reference_expand',
+						'Expanding semantic relationships...',
+						startedAt,
+						72,
+					);
+				},
+				options?.abortSignal,
+			);
+			this.emitProgress(
+				options,
+				'result_rank_and_pack',
+				'Ranking and packaging semantic results',
+				startedAt,
+				85,
+			);
+			this.emitProgress(
+				options,
+				'completed',
+				`Semantic search completed with ${result.totalResults} result(s)`,
+				startedAt,
+				100,
+				{totalResults: result.totalResults},
+			);
+			return result;
+		} catch (error) {
+			const normalizedError = this.normalizeSearchError(error);
+			this.emitProgress(
+				options,
+				normalizedError.phase,
+				normalizedError.message,
+				startedAt,
+				100,
+			);
+			return {
+				query,
+				symbols: [],
+				references: [],
+				totalResults: 0,
+				searchTime: Date.now() - startedAt,
+				degraded: true,
+				degradedReason: normalizedError.message,
+			};
+		}
 	}
 
 	async dispose(): Promise<void> {
