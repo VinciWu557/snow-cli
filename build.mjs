@@ -157,6 +157,8 @@ if (typeof globalThis.Path2D === 'undefined') {
 		'sharp',
 		// SSH2 includes native .node addons that cannot be bundled by esbuild
 		'ssh2',
+		// yoga-layout uses WASM with async init that must run outside the bundle
+		'yoga-layout',
 		'cpu-features',
 		// Note: katex and markdown-it-math are bundled (not external)
 		// Note: @microsoft/signalr dependencies (abort-controller, eventsource, fetch-cookie, node-fetch, tough-cookie) are NOT bundled

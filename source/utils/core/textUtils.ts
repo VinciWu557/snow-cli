@@ -18,6 +18,13 @@ export function cpLen(str: string): number {
 /**
  * Slice a string by code point indices (not byte indices).
  */
+/**
+ * Convert code point index to UTF-16 code unit offset.
+ */
+export function cpIndexToOffset(str: string, cpIndex: number): number {
+	return cpSlice(str, 0, cpIndex).length;
+}
+
 export function cpSlice(str: string, start: number, end?: number): string {
   const codePoints = toCodePoints(str);
   return codePoints.slice(start, end).join('');

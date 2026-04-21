@@ -100,13 +100,14 @@ export function useMessageProcessing(props: UseChatLogicProps) {
 
 	const processMessageRef =
 		useRef<
-			(
-				message: string,
-				images?: Array<{data: string; mimeType: string}>,
-				useBasicModel?: boolean,
-				hideUserMessage?: boolean,
-			) => Promise<void>
-		>();
+			| ((
+					message: string,
+					images?: Array<{data: string; mimeType: string}>,
+					useBasicModel?: boolean,
+					hideUserMessage?: boolean,
+			  ) => Promise<void>)
+			| undefined
+		>(undefined);
 
 	const yoloModeRef = useRef(yoloMode);
 

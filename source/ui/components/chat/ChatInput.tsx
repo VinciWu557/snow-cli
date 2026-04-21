@@ -1,5 +1,4 @@
 import React, {
-	useCallback,
 	useEffect,
 	useRef,
 	useMemo,
@@ -8,7 +7,7 @@ import React, {
 } from 'react';
 import {Box, Text} from 'ink';
 import {Viewport} from '../../../utils/ui/textBuffer.js';
-import {cpSlice, visualPosToCodePoint} from '../../../utils/core/textUtils.js';
+import {cpSlice, cpIndexToOffset, visualPosToCodePoint} from '../../../utils/core/textUtils.js';
 
 // Lazy load panel components to reduce initial bundle size
 const CommandPanel = lazy(() => import('../panels/CommandPanel.js'));
@@ -802,41 +801,20 @@ export default function ChatInput({
 		isPureBashMode,
 	]);
 
-	// Render cursor based on focus state
-	const renderCursor = useCallback(
-		(char: string) => {
-			if (hasFocus) {
-				// Focused: solid block cursor (use inverted colors)
-				return (
-					<Text
-						backgroundColor={theme.colors.menuNormal}
-						color={theme.colors.background}
-					>
-						{char}
-					</Text>
-				);
-			} else {
-				// Unfocused: no cursor, just render the character normally
-				return <Text>{char}</Text>;
-			}
-		},
-		[hasFocus, theme],
-	);
+	const showCursor = hasFocus;
 
-	// Render content with cursor (treat all text including placeholders as plain text)
+	// Render content with cursor using real terminal cursor
 	const INPUT_MAX_LINES = 6;
 	const EXPANDED_MAX_LINES = 12;
 
 	const renderContent = () => {
 		if (buffer.text.length > 0) {
-			// Use visual lines for proper wrapping and multi-line support
 			const visualLines = buffer.viewportVisualLines;
 			const [cursorRow, cursorCol] = buffer.visualCursor;
 
 			let startLine = 0;
 			let endLine = visualLines.length;
 
-			// Limit visible lines and scroll to keep cursor visible
 			const maxLines = buffer.isExpandedView
 				? EXPANDED_MAX_LINES
 				: INPUT_MAX_LINES;
@@ -849,7 +827,6 @@ export default function ChatInput({
 
 			const renderedLines: React.ReactNode[] = [];
 
-			// Scroll-up indicator
 			if (startLine > 0) {
 				renderedLines.push(
 					<Text key="scroll-up" color={theme.colors.menuSecondary} dimColor>
@@ -860,9 +837,9 @@ export default function ChatInput({
 
 			for (let i = startLine; i < endLine; i++) {
 				const line = visualLines[i] || '';
+				const isOnCursorLine = i === cursorRow;
 
-				if (i === cursorRow) {
-					// This line contains the cursor
+				if (isOnCursorLine) {
 					const cursorIndex = visualPosToCodePoint(line, cursorCol);
 					const beforeCursor = cpSlice(line, 0, cursorIndex);
 					const atCursor = cpSlice(line, cursorIndex, cursorIndex + 1) || ' ';
@@ -870,18 +847,26 @@ export default function ChatInput({
 
 					renderedLines.push(
 						<Box key={i} flexDirection="row">
-							<Text>{beforeCursor}</Text>
-							{renderCursor(atCursor)}
-							<Text>{afterCursor}</Text>
+							<Text
+								terminalCursorFocus={showCursor}
+								terminalCursorPosition={cpIndexToOffset(line, cursorIndex)}
+							>
+								{beforeCursor}
+								<Text
+									backgroundColor={showCursor ? theme.colors.menuNormal : undefined}
+									color={showCursor ? theme.colors.background : undefined}
+								>
+									{atCursor}
+								</Text>
+								{afterCursor}
+							</Text>
 						</Box>,
 					);
 				} else {
-					// No cursor in this line
 					renderedLines.push(<Text key={i}>{line || ' '}</Text>);
 				}
 			}
 
-			// Scroll-down indicator
 			if (endLine < visualLines.length) {
 				renderedLines.push(
 					<Text key="scroll-down" color={theme.colors.menuSecondary} dimColor>
@@ -896,12 +881,20 @@ export default function ChatInput({
 			return <Box flexDirection="column">{renderedLines}</Box>;
 		} else {
 			return (
-				<>
-					{renderCursor(' ')}
+				<Text
+					terminalCursorFocus={showCursor}
+					terminalCursorPosition={0}
+				>
+					<Text
+						backgroundColor={showCursor ? theme.colors.menuNormal : undefined}
+						color={showCursor ? theme.colors.background : undefined}
+					>
+						{' '}
+					</Text>
 					<Text color={theme.colors.menuSecondary} dimColor>
 						{disabled ? t.chatScreen.waitingForResponse : placeholder}
 					</Text>
-				</>
+				</Text>
 			);
 		}
 	};

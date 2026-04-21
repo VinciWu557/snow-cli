@@ -56,7 +56,7 @@ type KeyboardInputOptions = {
 	fileListRef: React.RefObject<{
 		getSelectedFile: () => string | null;
 		toggleDisplayMode: () => boolean;
-	}>;
+	} | null>;
 
 	showHistoryMenu: boolean;
 	setShowHistoryMenu: (show: boolean) => void;
